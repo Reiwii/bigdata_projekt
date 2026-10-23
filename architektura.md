@@ -152,3 +152,6 @@ Szacunkowo kroki 1-5 to jeden do dwóch weekendów.
 4. **Archiwum surowych danych** (Parquet) w MinIO.
 5. **Warstwa serwująca** (Redis / ScyllaDB) dla "ostatniej ceny" w milisekundach.
 6. **CeleryExecutor** w Airflow, gdy jedna maszyna nie wystarczy.
+
+## API
+Link do api: https://alltick.co/
