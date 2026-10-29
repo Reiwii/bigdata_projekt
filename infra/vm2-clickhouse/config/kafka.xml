@@ -1,0 +1,8 @@
+<clickhouse>
+    <kafka>
+        <broker_list>vm1:9092</broker_list>
+        <group_name>clickhouse-consumer</group_name>
+        <format>JSONEachRow</format>
+        <max_block_size>65536</max_block_size>
+    </kafka>
+</clickhouse>

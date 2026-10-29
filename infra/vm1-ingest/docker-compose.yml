@@ -1,32 +1,24 @@
-# vm1: Kafka (KRaft) + Kafka UI
+# vm1: Kafka (KRaft) + Kafka UI + Producer
 # Uruchomienie: docker compose up -d
-# Test: docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list
 
 services:
   kafka:
     image: bitnami/kafka:3.7
     container_name: kafka
     ports:
-      - "9092:9092"       # dostęp z innych VM
-      - "9093:9093"       # controller (wewnętrzny)
+      - "9092:9092"
+      - "9093:9093"
     environment:
-      # KRaft — bez ZooKeepera
       KAFKA_CFG_NODE_ID: 1
       KAFKA_CFG_PROCESS_ROLES: broker,controller
       KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
-
-      # Listenery
       KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
       KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://vm1:9092
       KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-
-      # Retencja 14 dni
       KAFKA_CFG_LOG_RETENTION_HOURS: 336
       KAFKA_CFG_LOG_RETENTION_BYTES: -1
-
-      # Auto-create topics (wygodne na dev)
       KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
     volumes:
       - kafka_data:/bitnami/kafka
@@ -50,7 +42,6 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Tworzenie topiku przy pierwszym starcie
   kafka-init:
     image: bitnami/kafka:3.7
     container_name: kafka-init
@@ -69,6 +60,21 @@ services:
         echo "Topiki gotowe:"
         kafka-topics --bootstrap-server kafka:9092 --list
     restart: "no"
+
+  producer:
+    build:
+      context: ../../producer
+      dockerfile: Dockerfile
+    container_name: producer
+    env_file: ../../producer/.env
+    environment:
+      SINK_TYPE: kafka
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: raw.alltick
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   kafka_data:

@@ -1,0 +1,22 @@
+# vm4: Serwis ML (FastAPI + XGBoost + Isolation Forest)
+# Uruchomienie: docker compose up -d
+# Test: curl http://vm4:8000/health
+
+services:
+  ml-service:
+    build:
+      context: ../../ml
+      dockerfile: Dockerfile
+    container_name: ml-service
+    ports:
+      - "8000:8000"
+    environment:
+      CLICKHOUSE_HOST: vm2
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: default
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3

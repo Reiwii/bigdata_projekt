@@ -1,0 +1,36 @@
+# vm5: Grafana + backup ClickHouse
+# Uruchomienie: docker compose up -d
+# UI: http://vm5:3000 (login: admin / admin)
+
+services:
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../../grafana/provisioning:/etc/grafana/provisioning
+      - ../../grafana/dashboards:/var/lib/grafana/dashboards
+    restart: unless-stopped
+
+  backup:
+    image: alpine:3.20
+    container_name: backup-cron
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache rsync openssh-client
+        echo "0 3 * * * rsync -az --delete vm2:/var/lib/clickhouse/backups/ /backups/clickhouse/" > /etc/crontabs/root
+        crond -f -l 2
+    volumes:
+      - backup_data:/backups
+    restart: unless-stopped
+
+volumes:
+  grafana_data:
+  backup_data:

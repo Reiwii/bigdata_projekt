@@ -29,7 +29,10 @@ wyświetlają się na dashboardach w Grafanie.
    - Gold = agregaty gotowe pod dashboardy i ML (3 tabele równoległe)
    - ML = wyniki modeli (predictions + anomalies)
 
-3. **Źródło danych:** AllTick API (https://alltick.co/), endpoint `/batch-kline`.
+3. **Jedno repo, 5 VM** — całe repo klonowane na każdą VM, ale każda odpala
+   tylko swój `docker compose` z katalogu `infra/vmX-*/`.
+
+4. **Źródło danych:** AllTick API (https://alltick.co/), endpoint `/batch-kline`.
    Plan Free: max 10 grup na zapytanie, 1 req/10s, ~900 req/dzień.
    Symbole: TSLA.US, 700.HK (rozszerzalne).
 
@@ -37,58 +40,85 @@ wyświetlają się na dashboardach w Grafanie.
 
 ```
 etl_koszela/
-├── architektura.md          # Pełna architektura z diagramami i tabelami
-├── CLAUDE.md                # TEN PLIK — kontekst dla AI
-├── pyproject.toml           # Zależności Python (uv)
+├── CLAUDE.md                       # TEN PLIK — kontekst dla AI
+├── architektura.md                 # Pełna architektura z diagramami
+├── pyproject.toml                  # Zależności Python (uv)
 │
-├── producer/                # [vm1] Python producer: API → Kafka
-│   ├── producer.py          #   KafkaSink (prod) / FileSink (dev)
-│   ├── .env                 #   tokeny i konfiguracja (gitignored)
-│   └── .env.example         #   szablon .env
+├── infra/                          # Docker Compose — PER VM
+│   ├── vm1-ingest/
+│   │   └── docker-compose.yml      #   Kafka + Kafka UI + Producer
+│   ├── vm2-clickhouse/
+│   │   ├── docker-compose.yml      #   ClickHouse
+│   │   ├── config/kafka.xml        #   konfiguracja konsumenta Kafki
+│   │   └── init/01_bronze.sql      #   tabele bronze (auto przy starcie)
+│   ├── vm3-orchestration/
+│   │   └── docker-compose.yml      #   Airflow + Postgres + dbt
+│   ├── vm4-ml/
+│   │   └── docker-compose.yml      #   FastAPI ML serwis
+│   └── vm5-grafana/
+│       └── docker-compose.yml      #   Grafana + backup cron
 │
-├── infra/                   # Docker Compose per VM
-│   └── kafka/
-│       └── docker-compose.yml  # [vm1] Kafka KRaft + Kafka UI + init topików
+├── producer/                       # Kod producera (używany przez vm1)
+│   ├── producer.py
+│   ├── Dockerfile
+│   ├── .env                        #   (gitignored)
+│   └── .env.example
 │
-├── dbt/                     # [vm3] Projekt dbt-clickhouse (DO ZROBIENIA)
-│   ├── models/
-│   │   ├── bronze/          #   raw_klines (Kafka Engine)
-│   │   ├── silver/          #   prices, volumes, indicators
-│   │   └── gold/            #   ohlc_1h, vwap, technical
-│   └── dbt_project.yml
+├── ml/                             # Serwis ML (używany przez vm4)
+│   ├── app.py                      #   FastAPI: /predict + /detect-anomalies
+│   └── Dockerfile
 │
-├── airflow/                 # [vm3] DAG-i Airflow (DO ZROBIENIA)
-│   └── dags/
-│       ├── medallion_and_ml.py  # Główny DAG z fan-out/fan-in
-│       └── backup_daily.py
+├── dbt/                            # Modele dbt (używany przez vm3)  [DO ZROBIENIA]
 │
-├── ml/                      # [vm4] Serwis ML (DO ZROBIENIA)
-│   ├── app.py               #   FastAPI: /predict + /detect-anomalies
-│   ├── models/              #   Wytrenowane modele (.joblib)
-│   └── train.py             #   Skrypt treningowy
+├── airflow/dags/                   # DAG-i Airflow (używany przez vm3) [DO ZROBIENIA]
 │
-├── grafana/                 # [vm5] Provisioning dashboardów (DO ZROBIENIA)
+├── grafana/                        # Dashboardy (używany przez vm5) [DO ZROBIENIA]
+│   ├── provisioning/
 │   └── dashboards/
 │
-└── data/                    # Lokalne dane testowe (gitignored)
+└── data/                           # Lokalne dane testowe (gitignored)
+```
+
+## Uruchamianie per VM
+
+```bash
+# Na każdej VM — klonujesz repo RAZ:
+git clone <repo-url> && cd etl_koszela
+
+# Potem odpalasz TYLKO swoją część:
+# vm1:
+cd infra/vm1-ingest && docker compose up -d
+
+# vm2:
+cd infra/vm2-clickhouse && docker compose up -d
+
+# vm3:
+cd infra/vm3-orchestration && docker compose up -d
+
+# vm4:
+cd infra/vm4-ml && docker compose up -d
+
+# vm5:
+cd infra/vm5-grafana && docker compose up -d
 ```
 
 ## Co jest gotowe, co do zrobienia
 
 ### ✅ Gotowe
-- [x] Producer (Python) z KafkaSink + FileSink
-- [x] Docker-compose Kafka (KRaft) + Kafka UI + auto-create topiku
+- [x] Producer (Python) z KafkaSink + FileSink + Dockerfile
+- [x] Docker-compose vm1: Kafka (KRaft) + Kafka UI + Producer + auto-topik
+- [x] Docker-compose vm2: ClickHouse + bronze (Kafka Engine + MergeTree + MV)
+- [x] Docker-compose vm3: Airflow (LocalExecutor) + Postgres + dbt mount
+- [x] Docker-compose vm4: FastAPI ML serwis (placeholder)
+- [x] Docker-compose vm5: Grafana + backup cron
 - [x] Architektura opisana (architektura.md)
-- [x] Dane testowe (data/raw_alltick_kline.txt)
 
 ### 🔲 Do zrobienia (w tej kolejności)
-- [ ] **vm2:** Docker-compose ClickHouse + tabela bronze z Kafka Engine
-- [ ] **vm3:** Projekt dbt — modele silver (3 tabele) i gold (3 tabele)
-- [ ] **vm3:** Docker-compose Airflow + DAG `medallion_and_ml` (nieliniowy!)
-- [ ] **vm4:** Serwis ML (FastAPI): predykcja XGBoost + anomalie Isolation Forest
-- [ ] **vm3:** DAG podłączony do serwisu ML (SimpleHttpOperator)
-- [ ] **vm5:** Grafana + dashboardy (ceny, predykcje vs real, anomalie)
-- [ ] **vm5:** Backup: rsync ClickHouse → vm5, DAG `backup_daily`
+- [ ] **dbt:** Projekt dbt-clickhouse — modele silver (3) i gold (3)
+- [ ] **Airflow:** DAG `medallion_and_ml` (nieliniowy fan-out/fan-in)
+- [ ] **ML:** Implementacja /predict (XGBoost) i /detect-anomalies (Isolation Forest)
+- [ ] **Grafana:** Dashboardy: ceny live, predykcje vs real, alerty anomalii
+- [ ] **Backup:** Przetestować rsync vm2 → vm5
 - [ ] Testy integracyjne end-to-end
 
 ## DAG — graf zależności (Airflow)
@@ -106,40 +136,41 @@ etl_koszela/
           └────┬─────┘          │
                ▼                ▼
          ml_predict ◄──── ml_anomaly                 ← cross-dependency
-               │                │
-               └────────┬───────┘
-                        ▼
-                notify_grafana
 ```
 
 ml_predict czeka na WSZYSTKIE trzy gold. ml_anomaly czeka tylko na gold_technical.
-Backup leci w osobnym DAG-u (niezależny).
 
 ## Konwencje
 
-- Każda usługa = jeden kontener Docker, zarządzany przez docker-compose per VM
-- Komunikacja między VM: TCP po nazwie (`vm1:9092`, `vm2:8123`)
-- Python: uv jako package manager, Python 3.14+
-- dbt: dbt-clickhouse, modele tagowane: `tag:silver`, `tag:gold`
+- Każda usługa = kontener Docker, docker-compose per VM w `infra/vmX-*/`
+- Komunikacja: TCP po nazwie (`vm1:9092`, `vm2:8123`, `vm4:8000`)
+- Python: uv, 3.14+ (kontenery: 3.12)
 - Nazwy tabel: `{warstwa}.{nazwa}` np. `bronze.raw_klines`, `gold.ohlc_1h`
 - Kafkowe topiki: `raw.{źródło}` np. `raw.alltick`
+- dbt tagi: `tag:silver`, `tag:gold`
 
 ## Przydatne komendy
 
 ```bash
-# Uruchom Kafkę (vm1)
-cd infra/kafka && docker compose up -d
-
-# Sprawdź topiki
+# Sprawdź topiki Kafki (vm1)
 docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list
-
-# Uruchom producera lokalnie (z plikiem)
-cd producer && SINK_TYPE=file uv run python producer.py
-
-# Uruchom producera z Kafką
-cd producer && SINK_TYPE=kafka KAFKA_BOOTSTRAP_SERVERS=localhost:9092 uv run python producer.py
 
 # Podejrzyj dane w topiku
 docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 \
   --topic raw.alltick --from-beginning --max-messages 5
+
+# Producer lokalnie (bez Kafki, do pliku)
+cd producer && SINK_TYPE=file uv run python producer.py
+
+# Sprawdź bronze w ClickHouse (vm2)
+docker exec clickhouse clickhouse-client -q "SELECT count() FROM bronze.raw_klines"
+
+# Airflow UI (vm3)
+# http://vm3:8082  login: airflow / airflow
+
+# Test ML serwis (vm4)
+curl http://vm4:8000/health
+
+# Grafana (vm5)
+# http://vm5:3000  login: admin / admin
 ```
