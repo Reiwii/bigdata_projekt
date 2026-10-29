@@ -1,157 +1,284 @@
- # to wstepne jeszcze mozna zmienic
-# Architektura platformy danych (medalion): Kafka -> ClickHouse -> dbt -> BI
+# Architektura platformy danych: Kafka → ClickHouse → dbt → AI → Grafana
 
 Dokument opisuje, **jak przepływają dane** i **co działa na której maszynie**.
 Założenia: 5 maszyn wirtualnych, każda usługa to jeden kontener (Docker Compose).
-Bezpieczeństwo danych zapewniają **backupy** oraz **14-dniowa retencja w Kafce**. Replikację można dołożyć później (sekcja 9).
+Bezpieczeństwo danych zapewniają **backupy** oraz **14-dniowa retencja w Kafce**.
+
+Pipeline jest **nieliniowy** — po warstwie bronze dane rozgałęziają się na niezależne
+ścieżki (ceny, wolumeny, wskaźniki techniczne), które łączą się dopiero w warstwie ML.
+Airflow pilnuje zależności i odpala równoległe ścieżki jednocześnie.
 
 ---
 
 ## 1. Obraz ogólny
 
 ```
-                         ŹRÓDŁA
-                  ┌─────────────────────┐
-                  │  API giełdowe       │
-                  │  (REST / WebSocket) │
-                  └─────────┬───────────┘
-                            │ pobieranie
-                            v
- vm1  INGEST      ┌─────────────────────┐
-                  │  Producer (Python)  │  streaming (WebSocket) lub
-                  │  lub DAG z Airflow  │  mini-batch (REST co 1-5 min)
-                  └─────────┬───────────┘
-                            v
-                  ┌─────────────────────┐
-                  │  KAFKA (1 broker)   │  topik: raw.<źródło>
-                  │  retencja 14 dni    │  = bufor i "kopia źródłowa"
-                  └─────────┬───────────┘
-                            │ silnik Kafka + Materialized View
-                            v
- vm2  BAZA        ┌──────────────────────┐
-                  │  CLICKHOUSE          │
-                  │  BRONZE  (surowe)    │
-                  │  SILVER  (czyste)    │
-                  │  GOLD    (agregaty)  │
-                  └───┬──────────────┬───┘
-                      ^              │ BACKUP raz na dobę
-                      │ dbt (SQL)    v
- vm3  ORKIESTRACJA    │        vm4  BACKUPY
-      ┌───────────────┴────┐   ┌──────────────────────┐
-      │ AIRFLOW (scheduler │   │ MinIO                │
-      │  + web UI)         │   │ (kopie ClickHouse)   │
-      │ dbt +dbt-clickhouse│   └──────────────────────┘
-      │ POSTGRES (pamięć   │
-      │  Airflow)          │   
-      └────────────────────┘ 
+                           ŹRÓDŁA
+                    ┌─────────────────────┐
+                    │  AllTick API         │
+                    │  (REST mini-batch)   │
+                    └─────────┬───────────┘
+                              │
+  vm1  INGEST       ┌────────▼────────┐
+                    │  Producer (Py)  │  co 5 min → Kafka
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │  KAFKA (KRaft)  │  topik: raw.alltick
+                    │  retencja 14 d  │
+                    └────────┬────────┘
+                             │ Kafka Engine
+                             ▼
+  vm2  BAZA         ┌────────────────────────────────────────┐
+                    │            CLICKHOUSE                   │
+                    │                                         │
+                    │  ┌─────────────────────────────────┐   │
+                    │  │          BRONZE                  │   │
+                    │  │  bronze.raw_klines (append-only) │   │
+                    │  └──────────────┬──────────────────┘   │
+                    │        ┌────────┼────────┐              │
+                    │        ▼        ▼        ▼              │
+                    │  ┌─────────┐┌────────┐┌───────────┐    │
+                    │  │ SILVER  ││SILVER  ││ SILVER    │    │
+                    │  │ prices  ││volumes ││indicators │    │
+                    │  └────┬────┘└───┬────┘└─────┬─────┘    │
+                    │       ▼         ▼           ▼           │
+                    │  ┌─────────┐┌────────┐┌───────────┐    │
+                    │  │ GOLD    ││ GOLD   ││ GOLD      │    │
+                    │  │ ohlc    ││ vwap   ││ technical │    │
+                    │  └────┬────┘└───┬────┘└─────┬─────┘    │
+                    │       │         │           │           │
+                    │       └─────┬───┘           │           │
+                    │             ▼               ▼           │
+                    │  ┌──────────────┐  ┌──────────────┐    │
+                    │  │ ml_predictions│  │ ml_anomalies │    │
+                    │  └──────────────┘  └──────────────┘    │
+                    └────────────────────────────────────────┘
+                          ▲               ▲
+          dbt (SQL)       │   AI (Python) │
+                          │               │
+  vm3  ORKIESTRACJA  ┌────┴───────────────┴────┐
+                     │ AIRFLOW (LocalExecutor)  │
+                     │ + Postgres (metadata)    │
+                     │ + dbt-clickhouse         │
+                     └──────────────────────────┘
+
+  vm4  AI            ┌─────────────────────────┐
+                     │ Serwis ML (Python)       │
+                     │ • predykcja cen          │
+                     │   (XGBoost / Prophet)    │
+                     │ • anomaly detection      │
+                     │   (Isolation Forest)     │
+                     │ wywoływany przez Airflow │
+                     └─────────────────────────┘
+
+  vm5  WIZUALIZACJA  ┌─────────────────────────┐
+                     │ Grafana                  │
+                     │ • dashboardy cen         │
+                     │ • predykcje vs realność  │
+                     │ • alerty anomalii        │
+                     │ + backup (rsync z vm2)   │
+                     └─────────────────────────┘
 ```
 
 ---
 
-## 2. Przepływ danych krok po kroku
+## 2. Nieliniowy DAG — przepływ danych
 
-| # | Etap | Co się dzieje | Kto to robi |
-|---|---|---|---|
-| 1 | **Pobranie** | Dane z API trafiają do systemu. Streaming: producer trzyma połączenie WebSocket. Mini-batch: DAG w Airflow odpytuje REST co 1-5 min. | Producer / Airflow (vm1, vm3) |
-| 2 | **Kolejka** | Surowe zdarzenia (JSON) lądują w topiku Kafki `raw.<źródło>`. Kafka trzyma je 14 dni. | Kafka (vm1) |
-| 3 | **Bronze** | ClickHouse sam czyta z Kafki i zapisuje **surowy JSON bez zmian** do tabeli append-only. | ClickHouse (vm2) |
-| 4 | **Silver** | dbt czyści dane: parsuje JSON, nadaje typy, usuwa duplikaty. | dbt uruchamiany z Airflow (vm3) |
-| 5 | **Gold** | dbt liczy agregaty: OHLC, VWAP, średnie w oknach czasowych. | dbt uruchamiany z Airflow (vm3) |
-| 6 | **Odbiorcy** | Dashboardy i analitycy czytają **tylko z gold**. | Grafana / BI (vm5) |
-| 7 | **Backup** | Raz na dobę DAG robi kopię bazy do MinIO. | Airflow -> MinIO (vm4) |
+Pipeline **nie jest linią** — po bronze rozgałęzia się na 3 niezależne ścieżki,
+które Airflow odpala równolegle. Ścieżki schodzą się dopiero przy ML.
 
-### Warstwy medalionu w jednym zdaniu
+```
+                    bronze_check
+                         │
+              ┌──────────┼──────────┐
+              ▼          ▼          ▼
+        silver_prices  silver_vol  silver_indicators     ← 3 równoległe
+              │          │          │
+              ▼          ▼          ▼
+        gold_ohlc    gold_vwap   gold_technical          ← 3 równoległe
+              │          │          │
+              └────┬─────┘          │
+                   ▼                ▼
+             ml_predict ◄──── ml_anomaly                 ← cross-dependency
+                   │                │
+                   └────────┬───────┘
+                            ▼
+                    notify_grafana (odśwież)
+```
 
-- **Bronze**: dane dokładnie takie, jak przyszły. Nic nie jest tracone, można zawsze przeliczyć od nowa.
-- **Silver**: te same dane, ale oczyszczone i z typami. Bez duplikatów.
-- **Gold**: gotowe agregaty pod konkretne raporty i wykresy.
+### Zależności w Airflow (co na co czeka)
 
----
-
-## 3. Co działa na której maszynie
-
-| VM | Rola | Usługi | Minimum zasobów |
-|---|---|---|---|
-| **vm1** | Ingest | Kafka (1 broker, KRaft), Kafka UI, producery API | 2-4 vCPU, 8 GB RAM, 100 GB dysku |
-| **vm2** | Baza | ClickHouse (bronze, silver, gold) | 4-8 vCPU, 16 GB RAM, szybki SSD |
-| **vm3** | Orkiestracja | Airflow (LocalExecutor), Postgres, dbt | 4 vCPU, 8 GB RAM |
-| **vm4** | Backupy | MinIO | 2 vCPU, 4 GB RAM, duży dysk |
-| **vm5** | Podgląd / zapas | Grafana; wolne miejsce na dev lub przyszłą replikę | 2 vCPU, 4 GB RAM |
-
-Komunikacja między maszynami to zwykłe TCP po nazwach / IP (`vm1:9092`). Wystarczy firewall otwierający potrzebne porty.
-
----
-
-## 4. Orkiestracja: odpowiednik jobów z Databricks
-
-Airflow działa jak Databricks Workflows: **DAG = job**, **task = krok joba**.
-
-| DAG | Harmonogram | Kroki |
+| Task | Czeka na | Dlaczego |
 |---|---|---|
-| `ingest_<źródło>` | co 1-5 min (tylko dla REST) | pobierz z API -> wyślij do Kafki |
-| `medallion_refresh` | co 5 min | sprawdź świeżość bronze -> `dbt run` silver -> `dbt test` -> `dbt run` gold -> `dbt test` |
-| `backup_daily` | raz na dobę | `BACKUP DATABASE ... TO S3(MinIO)` -> sprawdzenie wyniku |
-
-**dbt nie jest osobną usługą.** To pakiet zainstalowany w obrazie Airflow i wywoływany przez `BashOperator`, np. `dbt run --select tag:silver`.
-
-**Postgres** to wyłącznie pamięć Airflow (stan DAG-ów, historia uruchomień). Nie trzyma żadnych danych giełdowych.
-
----
-
-## 5. Backupy (jedyna ochrona danych w ClickHouse)
-
-Skoro nie ma replikacji, backupy są kluczowe:
-
-- **Co:** bazy `gold` i `silver` (codziennie), `bronze` opcjonalnie, bo da się je odtworzyć z Kafki.
-- **Jak:** DAG `backup_daily` wykonuje `BACKUP DATABASE gold TO S3('http://vm4:9000/backups/gold/<data>', ...)`. Opcjonalnie backup przyrostowy (`base_backup`), żeby oszczędzić miejsce.
-- **Gdzie:** MinIO na osobnej maszynie (vm4), nigdy na dysku ClickHouse.
-- **Ile trzymamy:** np. 7 dziennych kopii, starsze usuwa DAG.
-- **Test restore:** raz na jakiś czas odtwórz kopię na maszynie testowej. Backup, którego nie sprawdzono, nie jest backupem.
-- **Dodatkowo:** raz na jakiś czas skopiuj katalog MinIO w drugie miejsce (`rsync` / `restic` / zewnętrzny S3), bo jedna kopia na jednym dysku to wciąż jeden punkt awarii.
+| `silver_prices` | `bronze_check` | dane muszą być świeże |
+| `silver_volumes` | `bronze_check` | j.w. |
+| `silver_indicators` | `bronze_check` | j.w. |
+| `gold_ohlc` | `silver_prices` | agregaty z czystych cen |
+| `gold_vwap` | `silver_volumes` | VWAP potrzebuje wolumenów |
+| `gold_technical` | `silver_indicators` | RSI, MA, Bollinger z oczyszczonych danych |
+| `ml_anomaly` | `gold_technical` | szuka anomalii we wskaźnikach |
+| `ml_predict` | `gold_ohlc` + `gold_vwap` + `gold_technical` | predykcja potrzebuje wszystkiego |
+| `backup_daily` | *(niezależny DAG)* | leci osobno, raz na dobę |
 
 ---
 
-## 6. Model awarii
+## 3. Warstwy medalionu — co jest w każdej tabeli
+
+### Bronze (surowe, append-only)
+
+| Tabela | Źródło | Opis |
+|---|---|---|
+| `bronze.raw_klines` | Kafka `raw.alltick` | Surowy JSON z API, zero zmian. Deduplikacja dopiero w silver. |
+
+### Silver (oczyszczone, z typami)
+
+| Tabela | Zależy od | Opis |
+|---|---|---|
+| `silver.prices` | `bronze.raw_klines` | OHLC sparsowane, typy Decimal, deduplikacja po `event_id` (najnowszy `fetched_at`) |
+| `silver.volumes` | `bronze.raw_klines` | Wolumen i obrót (turnover), oczyszczone, z timestampem UTC |
+| `silver.indicators` | `bronze.raw_klines` | Wskaźniki techniczne liczone z surowych danych: RSI(14), SMA(20), EMA(12), Bollinger Bands |
+
+### Gold (agregaty, gotowe do użycia)
+
+| Tabela | Zależy od | Opis |
+|---|---|---|
+| `gold.ohlc_1h` | `silver.prices` | Świece 1h zagregowane z 5-min świec, per symbol |
+| `gold.vwap` | `silver.volumes` | Volume-Weighted Average Price w oknach 1h / 1d |
+| `gold.technical` | `silver.indicators` | Sygnały: RSI > 70 (overbought), RSI < 30 (oversold), cross MA |
+
+### ML (wyniki modeli)
+
+| Tabela | Zależy od | Opis |
+|---|---|---|
+| `ml.predictions` | `gold.ohlc_1h` + `gold.vwap` + `gold.technical` | Predykcja close_price na następne 1-6 świec (XGBoost) |
+| `ml.anomalies` | `gold.technical` | Anomalie wykryte Isolation Forest: nietypowy wolumen, nagły ruch ceny |
+
+---
+
+## 4. Co działa na której maszynie
+
+| VM | Rola | Usługi | Zasoby |
+|---|---|---|---|
+| **vm1** | Ingest | Kafka (1 broker, KRaft), Kafka UI, Producer (Python) | 2-4 vCPU, 8 GB RAM, 100 GB |
+| **vm2** | Baza | ClickHouse (bronze + silver + gold + ml) | 4-8 vCPU, 16 GB RAM, SSD |
+| **vm3** | Orkiestracja | Airflow (LocalExecutor) + Postgres + dbt-clickhouse | 4 vCPU, 8 GB RAM |
+| **vm4** | AI / ML | Serwis predykcji i anomalii (Python + scikit-learn/XGBoost) | 2-4 vCPU, 8 GB RAM |
+| **vm5** | Wizualizacja | Grafana + backup ClickHouse (rsync/cron z vm2) | 2 vCPU, 4 GB RAM |
+
+Komunikacja: TCP po nazwach / IP (`vm1:9092`, `vm2:8123`). Firewall otwiera potrzebne porty.
+
+---
+
+## 5. Orkiestracja — DAG-i w Airflow
+
+### DAG `medallion_and_ml` (co 5 min)
+
+```python
+bronze_check = ClickHouseSensor(
+    sql="SELECT max(fetched_at) FROM bronze.raw_klines",
+    # czeka aż bronze ma dane nowsze niż 5 min temu
+)
+
+# --- SILVER: 3 taski równolegle ---
+silver_prices     = BashOperator(cmd="dbt run --select silver_prices")
+silver_volumes    = BashOperator(cmd="dbt run --select silver_volumes")
+silver_indicators = BashOperator(cmd="dbt run --select silver_indicators")
+
+# --- GOLD: 3 taski równolegle ---
+gold_ohlc     = BashOperator(cmd="dbt run --select gold_ohlc_1h")
+gold_vwap     = BashOperator(cmd="dbt run --select gold_vwap")
+gold_tech     = BashOperator(cmd="dbt run --select gold_technical")
+
+# --- ML: wywołanie serwisu na vm4 ---
+ml_anomaly = SimpleHttpOperator(endpoint="http://vm4:8000/detect-anomalies")
+ml_predict = SimpleHttpOperator(endpoint="http://vm4:8000/predict")
+
+# --- Zależności (nieliniowe!) ---
+bronze_check >> [silver_prices, silver_volumes, silver_indicators]
+
+silver_prices     >> gold_ohlc
+silver_volumes    >> gold_vwap
+silver_indicators >> gold_tech
+
+gold_tech                          >> ml_anomaly
+[gold_ohlc, gold_vwap, gold_tech]  >> ml_predict
+```
+
+### DAG `backup_daily` (raz na dobę, niezależny)
+
+```python
+backup_ch = BashOperator(
+    cmd="clickhouse-client -h vm2 -q \"BACKUP DATABASE ... TO Disk('backups', ...)\""
+)
+rsync_to_vm5 = BashOperator(cmd="rsync -az vm2:/backups/ vm5:/backups/")
+
+backup_ch >> rsync_to_vm5
+```
+
+---
+
+## 6. Serwis ML na vm4
+
+Prosty FastAPI serwis z dwoma endpointami, wywoływany przez Airflow:
+
+| Endpoint | Model | Input (z ClickHouse) | Output (do ClickHouse) |
+|---|---|---|---|
+| `POST /predict` | XGBoost (lub Prophet) | gold.ohlc_1h + gold.vwap + gold.technical (ostatnie N świec) | ml.predictions (predicted_close, horizon, confidence) |
+| `POST /detect-anomalies` | Isolation Forest | gold.technical (ostatnie okno) | ml.anomalies (symbol, timestamp, anomaly_score, typ) |
+
+Serwis czyta z ClickHouse (clickhouse-connect), liczy, zapisuje wyniki z powrotem.
+Model trenowany offline na danych historycznych, plik `.joblib` ładowany przy starcie.
+
+---
+
+## 7. Backupy
+
+- **Co:** `silver` i `gold` codziennie. `bronze` opcjonalnie (odtwarzalne z Kafki).
+- **Jak:** `BACKUP DATABASE` w ClickHouse → lokalny dysk vm2 → `rsync` na vm5.
+- **Ile trzymamy:** 7 dziennych kopii, starsze usuwa DAG.
+- **Retencja Kafki (14 dni) > odstęp backupów (1 dzień)** — zawsze da się dograć brakujące dane.
+
+---
+
+## 8. Model awarii
 
 | Co padnie | Skutek | Odtworzenie |
 |---|---|---|
-| Kontener ClickHouse | brak odczytów i analityki | restart; po starcie baza **doczytuje zaległe dane z Kafki** (do 14 dni wstecz) |
-| Dysk ClickHouse (utrata danych) | utrata bazy | restore z MinIO + replay z Kafki od momentu backupu |
-| Kafka (vm1) | zatrzymanie nowych danych | restart kontenera, dane na wolumenie zostają; producenci mają retry/bufor |
-| Airflow (vm3) | stop liczenia silver/gold, bronze nadal się zapełnia | restart; DAG nadrabia zaległości |
-| Błąd człowieka (`DROP TABLE`, zepsute dbt) | dane zepsute | restore z backupu (stan z poprzedniej doby) + przeliczenie dbt |
-
-Brak automatycznego failoveru: przestoje wymagają ręcznego restartu, a odtworzenie po utracie dysku trwa godziny, nie sekundy. Dla analityki to akceptowalny kompromis.
-
-**Ważne:** retencja Kafki (14 dni) ma być **dłuższa niż odstęp między backupami**. Dzięki temu po restore zawsze da się dograć brakujące dane.
+| ClickHouse (vm2) | brak odczytów i analityki | restart; baza doczytuje z Kafki (do 14 dni) |
+| Dysk ClickHouse | utrata bazy | restore z backupu (vm5) + replay z Kafki |
+| Kafka (vm1) | stop nowych danych | restart; dane na wolumenie; producer ma retry |
+| Airflow (vm3) | stop przeliczeń, bronze nadal rośnie | restart; DAG nadrabia |
+| Serwis ML (vm4) | brak nowych predykcji, reszta działa | restart; następny cykl DAG przeliczy |
 
 ---
 
-## 7. Kolejność wdrożenia
+## 9. Kolejność wdrożenia
 
-| Krok | Co | Test, że działa |
-|---|---|---|
-| 1 | Docker na wszystkich VM, otwarte porty, wpisy `vmX` w `/etc/hosts` | `docker --context vmX ps` |
-| 2 | Kafka + Kafka UI na vm1, utworzenie topiku `raw.*` | produce / consume z konsoli |
-| 3 | ClickHouse na vm2 + tabele bronze | `SELECT count() FROM bronze.events` rośnie |
-| 4 | Producer jednego API -> Kafka | dane w bronze po kilku sekundach |
-| 5 | Airflow + dbt na vm3: silver i gold | DAG zielony, `dbt test` przechodzi |
-| 6 | MinIO na vm4, DAG backupu, **test restore** | odtworzenie tabeli z backupu |
-
-Szacunkowo kroki 1-5 to jeden do dwóch weekendów.
-
----
+| Krok | Co | VM | Test |
+|---|---|---|---|
+| 1 | Docker + porty + `/etc/hosts` na wszystkich | all | `docker ps` z każdej maszyny |
+| 2 | Kafka (KRaft) + Kafka UI + topik `raw.alltick` | vm1 | produce/consume z konsoli |
+| 3 | ClickHouse + tabela `bronze.raw_klines` (Kafka Engine) | vm2 | `SELECT count()` rośnie |
+| 4 | Producer → Kafka | vm1 | dane w bronze po sekundach |
+| 5 | Airflow + Postgres + dbt: silver i gold | vm3 | DAG zielony, `dbt test` OK |
+| 6 | Serwis ML (FastAPI + XGBoost + Isolation Forest) | vm4 | `curl vm4:8000/predict` zwraca wyniki |
+| 7 | Grafana: dashboardy cen + predykcje + anomalie | vm5 | wykresy się rysują |
+| 8 | Backup: rsync vm2 → vm5, test restore | vm5 | odtworzenie tabeli z kopii |
 
 ---
 
-## 9. skalowanie wrazie co 
+## 10. Skalowanie w przyszłości
 
-1. **Monitoring i alerty:** Prometheus + Grafana (alert na brak świeżych danych w bronze).
-2. **Replikacja ClickHouse:** druga replika na vm5, Keeper (3 instancje) i `ReplicatedMergeTree`. Rdzeń (topiki, bronze/silver/gold, dbt) się nie zmienia, dochodzą tylko pliki konfiguracyjne i `cluster` w profilu dbt.
-3. **Kafka z HA:** dwa kolejne brokery, RF=3.
-4. **Archiwum surowych danych** (Parquet) w MinIO.
-5. **Warstwa serwująca** (Redis / ScyllaDB) dla "ostatniej ceny" w milisekundach.
-6. **CeleryExecutor** w Airflow, gdy jedna maszyna nie wystarczy.
+1. **Monitoring:** Prometheus + Grafana alerting (brak świeżych danych w bronze).
+2. **Replikacja ClickHouse:** replika na vm5, Keeper, `ReplicatedMergeTree`.
+3. **Kafka HA:** dodatkowe brokery, RF=3.
+4. **Archiwum:** surowe dane → Parquet w MinIO.
+5. **Więcej modeli ML:** sentiment z newsów, korelacje między symbolami.
+6. **CeleryExecutor** w Airflow gdy LocalExecutor nie wystarczy.
+
+---
 
 ## API
-Link do api: https://alltick.co/
+
+Link do API: https://alltick.co/
