@@ -1,15 +1,16 @@
-"""Producer: AllTick /batch-kline -> plik tekstowy (JSON Lines).
+"""Producer: AllTick /batch-kline -> Kafka (lub plik jako fallback).
 
 Co robi:
   * co POLL_INTERVAL_SECONDS pyta API o 2 ostatnie świece dla listy symboli,
-  * każdą świecę zapisuje jako jedną linię JSON na końcu pliku (append),
+  * każdą świecę wysyła do topiku Kafki raw.alltick (klucz = symbol),
   * pilnuje limitów planu Free (odstęp, dzienny limit, backoff przy błędach).
 
-Format linii = przyszła wiadomość do Kafki (klucz = symbol, wartość = linia JSON).
-Dzięki temu później wystarczy podmienić FileSink na KafkaSink, a reszta zostaje.
+Tryby ujścia (SINK_TYPE w .env):
+  * "kafka" (domyślny) — wysyła do Kafki na KAFKA_BOOTSTRAP_SERVERS
+  * "file"             — append do pliku (do testów lokalnych bez Kafki)
 
 Uwaga: /batch-kline zwraca ZAWSZE 2 ostatnie świece, więc ta sama świeca
-(ten sam event_id) pojawi się w pliku wielokrotnie, a ostatnia wersja ma finalne
+(ten sam event_id) pojawi się wielokrotnie, a ostatnia wersja ma finalne
 wartości. To celowe: bronze jest surowe, deduplikacja dzieje się w silver
 (zostaje wiersz z najnowszym fetched_at dla danego event_id).
 """
@@ -23,6 +24,7 @@ import signal
 import sys
 import threading
 import uuid
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -34,9 +36,9 @@ from dotenv import load_dotenv
 log = logging.getLogger("producer")
 
 
-# ----------------------------------------------------------------------------
-# Konfiguracja (z pliku .env lub zmiennych środowiskowych)
-# ----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Konfiguracja
+# ---------------------------------------------------------------------------
 @dataclass
 class Config:
     token: str
@@ -44,9 +46,13 @@ class Config:
     symbols: list[str]
     kline_types: list[int]
     interval_s: int
-    output_file: Path
     max_groups: int
     daily_limit: int
+    # sink
+    sink_type: str  # "kafka" | "file"
+    kafka_bootstrap: str
+    kafka_topic: str
+    output_file: Path
 
     @classmethod
     def from_env(cls) -> Config:
@@ -63,9 +69,12 @@ class Config:
             symbols=symbols,
             kline_types=kline_types,
             interval_s=int(os.getenv("POLL_INTERVAL_SECONDS", "300")),
-            output_file=Path(os.getenv("OUTPUT_FILE", "data/raw_alltick_kline.txt")),
             max_groups=int(os.getenv("MAX_GROUPS", "10")),
             daily_limit=int(os.getenv("DAILY_REQUEST_LIMIT", "900")),
+            sink_type=os.getenv("SINK_TYPE", "kafka").lower(),
+            kafka_bootstrap=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "vm1:9092"),
+            kafka_topic=os.getenv("KAFKA_TOPIC", "raw.alltick"),
+            output_file=Path(os.getenv("OUTPUT_FILE", "data/raw_alltick_kline.txt")),
         )
         cfg.validate()
         return cfg
@@ -78,25 +87,37 @@ class Config:
         groups = len(self.symbols) * len(self.kline_types)
         if groups > self.max_groups:
             sys.exit(
-                f"{groups} grup (symbole x typy świec) > limit {self.max_groups} na zapytanie. "
-                "Zmniejsz liczbę symboli/typów albo zmień MAX_GROUPS, jeśli masz wyższy plan."
+                f"{groups} grup (symbole x typy świec) > limit {self.max_groups}. "
+                "Zmniejsz liczbę symboli/typów albo zmień MAX_GROUPS."
             )
         if self.interval_s < 10:
-            sys.exit(
-                "POLL_INTERVAL_SECONDS musi być >= 10 (limit planu Free: 1 zapytanie / 10 s)."
-            )
+            sys.exit("POLL_INTERVAL_SECONDS musi być >= 10 (limit Free: 1/10s).")
+        if self.sink_type not in ("kafka", "file"):
+            sys.exit(f"SINK_TYPE musi być 'kafka' lub 'file', jest: {self.sink_type}")
 
 
-# ----------------------------------------------------------------------------
-# Ujście danych: teraz plik, później Kafka (ten sam interfejs send/flush/close)
-# ----------------------------------------------------------------------------
-class FileSink:
+# ---------------------------------------------------------------------------
+# Ujścia danych (Sink) — wspólny interfejs
+# ---------------------------------------------------------------------------
+class Sink(ABC):
+    @abstractmethod
+    def send(self, key: str, event: dict) -> None: ...
+
+    @abstractmethod
+    def flush(self) -> None: ...
+
+    @abstractmethod
+    def close(self) -> None: ...
+
+
+class FileSink(Sink):
+    """Zapis do pliku — do testów lokalnych bez Kafki."""
+
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._f = open(path, "a", encoding="utf-8")
 
     def send(self, key: str, event: dict) -> None:
-        # key nie jest używany w pliku; zostaje, bo Kafka będzie go potrzebować
         self._f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
     def flush(self) -> None:
@@ -107,9 +128,65 @@ class FileSink:
         self._f.close()
 
 
-# ----------------------------------------------------------------------------
+class KafkaSink(Sink):
+    """Wysyłka do topiku Kafki. Klucz = symbol (partycjonowanie po symbolu)."""
+
+    def __init__(self, bootstrap_servers: str, topic: str) -> None:
+        from confluent_kafka import Producer as KProducer
+
+        self._topic = topic
+        self._producer = KProducer(
+            {
+                "bootstrap.servers": bootstrap_servers,
+                "acks": "all",
+                "linger.ms": 100,  # mini-batching wewnątrz producenta
+                "batch.size": 65536,
+                "compression.type": "lz4",
+                "retries": 5,
+                "retry.backoff.ms": 500,
+            }
+        )
+        self._delivery_errors: list[str] = []
+        log.info("KafkaSink: %s → topik '%s'", bootstrap_servers, topic)
+
+    def _on_delivery(self, err, msg) -> None:
+        if err is not None:
+            self._delivery_errors.append(str(err))
+            log.error("Kafka delivery error: %s", err)
+
+    def send(self, key: str, event: dict) -> None:
+        value = json.dumps(event, ensure_ascii=False).encode("utf-8")
+        self._producer.produce(
+            topic=self._topic,
+            key=key.encode("utf-8"),
+            value=value,
+            callback=self._on_delivery,
+        )
+        # Obsługa callbacków bez blokowania
+        self._producer.poll(0)
+
+    def flush(self) -> None:
+        remaining = self._producer.flush(timeout=10)
+        if remaining > 0:
+            log.warning("Kafka flush: %d wiadomości nie wysłanych.", remaining)
+        if self._delivery_errors:
+            errors = self._delivery_errors[:5]
+            self._delivery_errors.clear()
+            log.error("Błędy dostarczenia: %s", errors)
+
+    def close(self) -> None:
+        self._producer.flush(timeout=30)
+
+
+def create_sink(cfg: Config) -> Sink:
+    if cfg.sink_type == "kafka":
+        return KafkaSink(cfg.kafka_bootstrap, cfg.kafka_topic)
+    return FileSink(cfg.output_file)
+
+
+# ---------------------------------------------------------------------------
 # Wywołanie API i zamiana odpowiedzi na zdarzenia
-# ----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 class ApiError(Exception):
     pass
 
@@ -159,14 +236,14 @@ def to_events(payload: dict, fetched_at: str) -> Iterator[tuple[str, dict]]:
                     "code": code,
                     "kline_type": kline_type,
                     "fetched_at": fetched_at,
-                    "payload": candle,  # surowa świeca z API, bez zmian (bronze)
+                    "payload": candle,
                 },
             )
 
 
-# ----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Pętla główna
-# ----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 def seconds_until_midnight() -> float:
     now = datetime.now()
     midnight = (now + timedelta(days=1)).replace(
@@ -180,23 +257,22 @@ def run(cfg: Config) -> None:
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
 
-    sink = FileSink(cfg.output_file)
+    sink = create_sink(cfg)
     session = requests.Session()
     failures = 0
     requests_today = 0
     today = datetime.now().date()
 
     log.info(
-        "Start: %d symboli x %d typów świec, co %ds, plik: %s",
+        "Start: %d symboli x %d typów świec, co %ds, sink=%s",
         len(cfg.symbols),
         len(cfg.kline_types),
         cfg.interval_s,
-        cfg.output_file,
+        cfg.sink_type,
     )
 
     try:
         while not stop.is_set():
-            # reset licznika o północy
             if datetime.now().date() != today:
                 today = datetime.now().date()
                 requests_today = 0
@@ -224,7 +300,7 @@ def run(cfg: Config) -> None:
                 sink.flush()
                 failures = 0
                 log.info(
-                    "Zapisano %d świec (zapytań dziś: %d/%d)",
+                    "Wysłano %d świec (zapytań dziś: %d/%d)",
                     count,
                     requests_today,
                     cfg.daily_limit,
@@ -232,7 +308,6 @@ def run(cfg: Config) -> None:
                 delay = cfg.interval_s
             except (requests.RequestException, ApiError, ValueError, KeyError) as exc:
                 failures += 1
-                # wyjątki requests potrafią zawierać URL z tokenem, więc go zasłaniamy
                 msg = str(exc).replace(cfg.token, "***")
                 delay = min(cfg.interval_s * 2**failures, 900)
                 log.error(

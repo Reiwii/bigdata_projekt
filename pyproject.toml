@@ -3,10 +3,11 @@ name = "etl-koszela"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
+    "confluent-kafka>=2.6.1",
     "dotenv>=0.9.9",
     "requests>=2.34.2",
-
 ]
+
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
