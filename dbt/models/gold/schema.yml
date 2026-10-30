@@ -1,0 +1,50 @@
+version: 2
+
+models:
+  - name: gold_ohlc_1h
+    description: "Świece OHLC zagregowane do interwału 1-godzinnego"
+    columns:
+      - name: symbol
+        description: "Ticker"
+      - name: hour
+        description: "Początek godziny"
+      - name: open
+        description: "Cena otwarcia (pierwsza świeca w godzinie)"
+      - name: high
+        description: "Max z high w godzinie"
+      - name: low
+        description: "Min z low w godzinie"
+      - name: close
+        description: "Cena zamknięcia (ostatnia świeca w godzinie)"
+      - name: candle_count
+        description: "Ile świec złożyło się na tę godzinę"
+
+  - name: gold_vwap
+    description: "Volume-Weighted Average Price — łączy ceny z wolumenami"
+    columns:
+      - name: symbol
+        description: "Ticker"
+      - name: hour
+        description: "Początek godziny"
+      - name: vwap
+        description: "VWAP = Σ(typical_price × volume) / Σ(volume)"
+      - name: total_volume
+        description: "Łączny wolumen w godzinie"
+      - name: total_turnover
+        description: "Łączny obrót w godzinie"
+
+  - name: gold_technical
+    description: "Sygnały tradingowe: oversold/overbought, trend, volatility"
+    columns:
+      - name: symbol
+        description: "Ticker"
+      - name: candle_time
+        description: "Czas świecy"
+      - name: rsi_signal
+        description: "oversold / overbought / neutral"
+      - name: trend_signal
+        description: "bullish / bearish / neutral (EMA vs SMA)"
+      - name: volatility_signal
+        description: "squeeze / expansion / normal (Bollinger width)"
+      - name: composite_signal
+        description: "strong_buy / buy / hold / sell / strong_sell"

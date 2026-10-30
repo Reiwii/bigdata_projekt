@@ -1,0 +1,13 @@
+etl_koszela:
+  target: dev
+  outputs:
+    dev:
+      type: clickhouse
+      host: "{{ env_var('CLICKHOUSE_HOST', 'vm2') }}"
+      port: 8123
+      user: default
+      password: ''
+      schema: default
+      secure: false
+      verify: false
+      connect_timeout: 10

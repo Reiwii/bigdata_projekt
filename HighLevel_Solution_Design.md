@@ -14,7 +14,7 @@ Platforma działa samodzielnie 24/7 bez ingerencji użytkownika.
 
 ## 2. Problem biznesowy
 
-Analitycy i inwestorzy potrzebują szybkiego dostępu do oczyszczonych, zagregowanych danych giełdowych w jednym miejscu. Ręczne zbieranie danych z API, ich czyszczenie i wizualizacja zajmuje godziny — platforma robi to automatycznie co 5 minut.
+Analitycy i inwestorzy potrzebują szybkiego dostępu do oczyszczonych, zagregowanych danych giełdowych w jednym miejscu. Ręczne zbieranie danych z API, ich czyszczenie i wizualizacja zajmuje godziny — platforma robi to automatycznie co 15 minut.
 
 Dodatkowo ludzkie oko nie wychwytuje wszystkich anomalii w danych. Model AI analizuje wzorce i sygnalizuje sytuacje wymagające uwagi szybciej niż człowiek.
 
@@ -45,7 +45,7 @@ Platforma wysyła powiadomienia gdy:
 
 | Źródło | Typ danych | Częstotliwość | Symbole |
 |---|---|---|---|
-| AllTick API | Świece cenowe (OHLC), wolumen, obrót | Co 5 minut | TSLA (Tesla), 700.HK (Tencent) |
+| AllTick API | Świece cenowe (OHLC), wolumen, obrót | Co 15 minut | TSLA (Tesla), 700.HK (Tencent) |
 
 Platforma jest przygotowana na dodawanie kolejnych symboli i źródeł danych bez przebudowy architektury.
 
@@ -57,7 +57,7 @@ Platforma jest przygotowana na dodawanie kolejnych symboli i źródeł danych be
   Giełdy (API)
       │
       ▼
-  Pobranie danych          co 5 minut, automatycznie
+  Pobranie danych          co 15 minut, automatycznie
       │
       ▼
   Surowe dane              dokładna kopia z API, nic nie zmienione

@@ -1,0 +1,52 @@
+version: 2
+
+models:
+  - name: silver_prices
+    description: "Zdeduplikowane świece OHLC — dla każdego event_id tylko najnowszy fetch"
+    columns:
+      - name: event_id
+        description: "Unikalny ID zdarzenia"
+      - name: symbol
+        description: "Ticker (np. AAPL, MSFT)"
+      - name: candle_time
+        description: "Czas otwarcia świecy"
+      - name: open
+        description: "Cena otwarcia"
+      - name: high
+        description: "Najwyższa cena"
+      - name: low
+        description: "Najniższa cena"
+      - name: close
+        description: "Cena zamknięcia"
+
+  - name: silver_volumes
+    description: "Wolumen i obrót, zdeduplikowane, z obliczoną średnią ceną transakcji"
+    columns:
+      - name: event_id
+        description: "Unikalny ID zdarzenia"
+      - name: symbol
+        description: "Ticker"
+      - name: volume
+        description: "Wolumen (ilość)"
+      - name: turnover
+        description: "Obrót (wartość)"
+      - name: avg_trade_price
+        description: "Średnia cena transakcji = turnover / volume"
+
+  - name: silver_indicators
+    description: "Wskaźniki techniczne: RSI(14), SMA(20), EMA(12), Bollinger Bands"
+    columns:
+      - name: symbol
+        description: "Ticker"
+      - name: candle_time
+        description: "Czas świecy"
+      - name: sma_20
+        description: "Simple Moving Average (20 okresów)"
+      - name: ema_12
+        description: "Exponential Moving Average (12 okresów, aprox)"
+      - name: bollinger_upper
+        description: "Górna wstęga Bollingera (SMA + 2σ)"
+      - name: bollinger_lower
+        description: "Dolna wstęga Bollingera (SMA - 2σ)"
+      - name: rsi_14
+        description: "Relative Strength Index (14 okresów)"

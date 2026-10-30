@@ -1,0 +1,24 @@
+version: 2
+
+models:
+  - name: stg_klines
+    description: "Widok staging — parsuje JSON z bronze.raw_klines na kolumny z typami"
+    columns:
+      - name: event_id
+        description: "Unikalny ID świecy: alltick:{symbol}:{kline_type}:{timestamp}"
+      - name: symbol
+        description: "Kod instrumentu (np. TSLA.US, 700.HK)"
+      - name: candle_time
+        description: "Czas otwarcia świecy (UTC)"
+      - name: open
+        description: "Cena otwarcia"
+      - name: high
+        description: "Najwyższa cena w świecy"
+      - name: low
+        description: "Najniższa cena w świecy"
+      - name: close
+        description: "Cena zamknięcia"
+      - name: volume
+        description: "Wolumen (liczba akcji)"
+      - name: turnover
+        description: "Obrót (wartość pieniężna)"

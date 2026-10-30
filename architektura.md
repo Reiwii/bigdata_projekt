@@ -115,7 +115,7 @@ które Airflow odpala równolegle. Ścieżki schodzą się dopiero przy ML.
 | `silver_volumes` | `bronze_check` | j.w. |
 | `silver_indicators` | `bronze_check` | j.w. |
 | `gold_ohlc` | `silver_prices` | agregaty z czystych cen |
-| `gold_vwap` | `silver_volumes` | VWAP potrzebuje wolumenów |
+| `gold_vwap` | `silver_prices` + `silver_volumes` | VWAP łączy ceny z wolumenami |
 | `gold_technical` | `silver_indicators` | RSI, MA, Bollinger z oczyszczonych danych |
 | `ml_anomaly` | `gold_technical` | szuka anomalii we wskaźnikach |
 | `ml_predict` | `gold_ohlc` + `gold_vwap` + `gold_technical` | predykcja potrzebuje wszystkiego |
@@ -144,7 +144,7 @@ które Airflow odpala równolegle. Ścieżki schodzą się dopiero przy ML.
 | Tabela | Zależy od | Opis |
 |---|---|---|
 | `gold.ohlc_1h` | `silver.prices` | Świece 1h zagregowane z 5-min świec, per symbol |
-| `gold.vwap` | `silver.volumes` | Volume-Weighted Average Price w oknach 1h / 1d |
+| `gold.vwap` | `silver.prices` + `silver.volumes` | Volume-Weighted Average Price (łączy ceny z wolumenami) |
 | `gold.technical` | `silver.indicators` | Sygnały: RSI > 70 (overbought), RSI < 30 (oversold), cross MA |
 
 ### ML (wyniki modeli)
@@ -172,7 +172,7 @@ Komunikacja: TCP po nazwach / IP (`vm1:9092`, `vm2:8123`). Firewall otwiera potr
 
 ## 5. Orkiestracja — DAG-i w Airflow
 
-### DAG `medallion_and_ml` (co 5 min)
+### DAG `medallion_and_ml` (co 15 min)
 
 ```python
 bronze_check = ClickHouseSensor(
@@ -198,7 +198,7 @@ ml_predict = SimpleHttpOperator(endpoint="http://vm4:8000/predict")
 bronze_check >> [silver_prices, silver_volumes, silver_indicators]
 
 silver_prices     >> gold_ohlc
-silver_volumes    >> gold_vwap
+[silver_prices, silver_volumes]  >> gold_vwap      # VWAP needs both
 silver_indicators >> gold_tech
 
 gold_tech                          >> ml_anomaly
