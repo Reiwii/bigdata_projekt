@@ -1,7 +1,7 @@
 # Jak odpalić platformę
 
 
-## 1. Klonuj repo (na każdej VM)
+## 1. Klonuj repo (na każdej VM) JUZ ZROBIONE NIE TRZEBA
 
 ```bash
 git clone <repo-url> bigdata_projekt
@@ -10,14 +10,14 @@ cd bigdata_projekt
 
 ## 2. Odpal usługi w kolejności
 
-### VM1 — Kafka + Producer
+### VM1 — Kafka + Producer 
 
 Producer pobiera świece 1-minutowe z Binance Spot API (`https://data-api.binance.vision`) — publiczny endpoint, bez klucza API, bez konta. Domyślnie 4 pary: BTCUSDT, SOLUSDT, BNBUSDT, XRPUSDT; przy pierwszym starcie backfill ostatnich 1000 świec/symbol (~16 h historii), potem polling co 60 s.
 
 Plik `producer/.env` jest w `.gitignore`, więc skopiuj przykład (edycja opcjonalna — defaulty działają od razu):
 
 ```bash
-cp producer/.env.example producer/.env
+cp producer/.env.example producer/.env  ## TO JUZ ZROBIONE NIE TRZEBA 
 # opcjonalnie: nano producer/.env  (zmień SYMBOLS, BINANCE_INTERVAL itp.)
 ```
 
