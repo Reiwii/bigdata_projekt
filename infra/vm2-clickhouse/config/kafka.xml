@@ -1,8 +1,5 @@
 <clickhouse>
     <kafka>
-        <bootstrap_servers>vm1:9092</bootstrap_servers>
-        <group_name>clickhouse-consumer</group_name>
-        <format>JSONEachRow</format>
-        <max_block_size>65536</max_block_size>
+        <!-- global librdkafka settings; broker/group/format are set per-table in SQL -->
     </kafka>
 </clickhouse>
