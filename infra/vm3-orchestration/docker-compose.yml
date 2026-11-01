@@ -44,7 +44,7 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        pip install dbt-clickhouse
+        pip install "dbt-core==1.8.9" "dbt-clickhouse==1.8.5"
         airflow db migrate
         airflow users create \
           --username airflow --password airflow \
@@ -58,7 +58,7 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        pip install dbt-clickhouse && exec airflow webserver
+        pip install "dbt-core==1.8.9" "dbt-clickhouse==1.8.5" && exec airflow webserver
     ports:
       - "8082:8080"
     restart: unless-stopped
@@ -69,7 +69,7 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        pip install dbt-clickhouse && exec airflow scheduler
+        pip install "dbt-core==1.8.9" "dbt-clickhouse==1.8.5" && exec airflow scheduler
     restart: unless-stopped
 
 volumes:
