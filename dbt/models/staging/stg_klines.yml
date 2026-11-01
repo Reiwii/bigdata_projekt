@@ -2,23 +2,29 @@ version: 2
 
 models:
   - name: stg_klines
-    description: "Widok staging — parsuje JSON z bronze.raw_klines na kolumny z typami"
+    description: "Widok staging — parsuje JSON z bronze.raw_klines na kolumny z typami (Binance crypto klines)"
     columns:
       - name: event_id
-        description: "Unikalny ID świecy: alltick:{symbol}:{kline_type}:{timestamp}"
+        description: "Unikalny ID świecy: binance:{symbol}:{kline_type}:{open_time_sec}"
       - name: symbol
-        description: "Kod instrumentu (np. TSLA.US, 700.HK)"
+        description: "Para krypto (np. BTCUSDT, SOLUSDT, BNBUSDT, XRPUSDT)"
+      - name: kline_type
+        description: "Rozmiar świecy w minutach (1 = 1m, 5 = 5m, 15 = 15m, 60 = 1h, 1440 = 1d, 0 = 1s)"
       - name: candle_time
-        description: "Czas otwarcia świecy (UTC)"
+        description: "Czas otwarcia świecy (UTC), DateTime z Unix timestamp"
       - name: open
-        description: "Cena otwarcia"
+        description: "Cena otwarcia (Float64)"
       - name: high
-        description: "Najwyższa cena w świecy"
+        description: "Najwyższa cena w świecy (Float64)"
       - name: low
-        description: "Najniższa cena w świecy"
+        description: "Najniższa cena w świecy (Float64)"
       - name: close
-        description: "Cena zamknięcia"
+        description: "Cena zamknięcia (Float64)"
       - name: volume
-        description: "Wolumen (liczba akcji)"
+        description: "Base asset volume — ilość waluty bazowej w transakcjach (Float64)"
       - name: turnover
-        description: "Obrót (wartość pieniężna)"
+        description: "Quote asset volume — obrót w walucie kwotowanej (USDT), Float64"
+      - name: fetched_at
+        description: "Kiedy producer pobrał tę świecę z API (UTC)"
+      - name: _inserted_at
+        description: "Kiedy ClickHouse wstawił wiersz do bronze (UTC)"

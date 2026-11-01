@@ -15,16 +15,16 @@ Airflow pilnuje zależności i odpala równoległe ścieżki jednocześnie.
 ```
                            ŹRÓDŁA
                     ┌─────────────────────┐
-                    │  AllTick API         │
-                    │  (REST mini-batch)   │
+                    │   Binance Spot API  │
+                    │  (REST /api/v3/klns)│
                     └─────────┬───────────┘
                               │
   vm1  INGEST       ┌────────▼────────┐
-                    │  Producer (Py)  │  co 5 min → Kafka
+                    │  Producer (Py)  │  co 60 s → Kafka
                     └────────┬────────┘
                              │
                     ┌────────▼────────┐
-                    │  KAFKA (KRaft)  │  topik: raw.alltick
+                    │  KAFKA (KRaft)  │  topik: raw.binance
                     │  retencja 14 d  │
                     └────────┬────────┘
                              │ Kafka Engine
@@ -129,7 +129,7 @@ które Airflow odpala równolegle. Ścieżki schodzą się dopiero przy ML.
 
 | Tabela | Źródło | Opis |
 |---|---|---|
-| `bronze.raw_klines` | Kafka `raw.alltick` | Surowy JSON z API, zero zmian. Deduplikacja dopiero w silver. |
+| `bronze.raw_klines` | Kafka `raw.binance` | Surowy JSON z API, zero zmian. Deduplikacja dopiero w silver. |
 
 ### Silver (oczyszczone, z typami)
 
@@ -143,7 +143,7 @@ które Airflow odpala równolegle. Ścieżki schodzą się dopiero przy ML.
 
 | Tabela | Zależy od | Opis |
 |---|---|---|
-| `gold.ohlc_1h` | `silver.prices` | Świece 1h zagregowane z 5-min świec, per symbol |
+| `gold.ohlc_1h` | `silver.prices` | Świece 1h zagregowane z 1-min świec, per symbol |
 | `gold.vwap` | `silver.prices` + `silver.volumes` | Volume-Weighted Average Price (łączy ceny z wolumenami) |
 | `gold.technical` | `silver.indicators` | Sygnały: RSI > 70 (overbought), RSI < 30 (oversold), cross MA |
 
@@ -258,7 +258,7 @@ Model trenowany offline na danych historycznych, plik `.joblib` ładowany przy s
 | Krok | Co | VM | Test |
 |---|---|---|---|
 | 1 | Docker + porty + `/etc/hosts` na wszystkich | all | `docker ps` z każdej maszyny |
-| 2 | Kafka (KRaft) + Kafka UI + topik `raw.alltick` | vm1 | produce/consume z konsoli |
+| 2 | Kafka (KRaft) + Kafka UI + topik `raw.binance` | vm1 | produce/consume z konsoli |
 | 3 | ClickHouse + tabela `bronze.raw_klines` (Kafka Engine) | vm2 | `SELECT count()` rośnie |
 | 4 | Producer → Kafka | vm1 | dane w bronze po sekundach |
 | 5 | Airflow + Postgres + dbt: silver i gold | vm3 | DAG zielony, `dbt test` OK |
@@ -281,4 +281,5 @@ Model trenowany offline na danych historycznych, plik `.joblib` ładowany przy s
 
 ## API
 
-Link do API: https://alltick.co/
+Link do API: https://developers.binance.com/docs/binance-spot-api-docs/faqs/market_data_only
+(publiczny `data-api.binance.vision`, bez klucza API)

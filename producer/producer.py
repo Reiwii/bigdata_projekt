@@ -1,18 +1,29 @@
-"""Producer: AllTick /batch-kline -> Kafka (lub plik jako fallback).
+"""Producer: Binance Spot /api/v3/klines -> Kafka (lub plik jako fallback).
 
 Co robi:
-  * co POLL_INTERVAL_SECONDS pyta API o 2 ostatnie świece dla listy symboli,
-  * każdą świecę wysyła do topiku Kafki raw.alltick (klucz = symbol),
-  * pilnuje limitów planu Free (odstęp, dzienny limit, backoff przy błędach).
+  * przy starcie opcjonalnie robi backfill: pobiera ostatnie BACKFILL_LIMIT świec
+    dla każdego symbolu (do 1000 w jednym zapytaniu) — żeby bronze miał od razu
+    kawałek historii, a dbt mógł policzyć wskaźniki (SMA20, RSI14 potrzebują
+    kilkudziesięciu świec na start),
+  * potem co POLL_INTERVAL_SECONDS pyta API o 2 ostatnie świece dla każdego
+    symbolu i wysyła je do topiku Kafki raw.binance (klucz = symbol),
+  * pilnuje limitów Binance (waga 6000/min na IP; polling 1m dla 4 symboli
+    kosztuje ~8 wagi/min — mamy ~700x zapas).
+
+Dlaczego 2 świece przy polling?
+  Ostatnia świeca na Binance jest aktywna aż do swojego close_time, więc jej
+  wartości (close, high, low, volume) jeszcze się zmieniają. Bierzemy ją razem
+  z poprzednią (zamkniętą), bronze jest append-only, a silver i tak robi
+  deduplikację po event_id biorąc wiersz z najnowszym fetched_at.
 
 Tryby ujścia (SINK_TYPE w .env):
   * "kafka" (domyślny) — wysyła do Kafki na KAFKA_BOOTSTRAP_SERVERS
   * "file"             — append do pliku (do testów lokalnych bez Kafki)
 
-Uwaga: /batch-kline zwraca ZAWSZE 2 ostatnie świece, więc ta sama świeca
-(ten sam event_id) pojawi się wielokrotnie, a ostatnia wersja ma finalne
-wartości. To celowe: bronze jest surowe, deduplikacja dzieje się w silver
-(zostaje wiersz z najnowszym fetched_at dla danego event_id).
+Format pól w payload: timestamp jako sekundy Unix, open_price/high_price/
+low_price/close_price/volume/turnover jako stringi. Dzięki temu bronze
+pozostaje bez zmian, a stg_klines parsuje wszystko jako Float64 (volume
+w krypto jest ułamkowy).
 """
 
 from __future__ import annotations
@@ -23,10 +34,10 @@ import os
 import signal
 import sys
 import threading
-import uuid
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -37,17 +48,38 @@ log = logging.getLogger("producer")
 
 
 # ---------------------------------------------------------------------------
+# Mapowanie interwału Binance ("1m", "5m", ...) na kline_type (minuty).
+# Bronze przechowuje kline_type jako UInt8, więc trzymamy liczbę minut
+# (1-godzinna = 60, 1-dniowa = 1440). Dla "1s" używamy 0 (poniżej minuty).
+# ---------------------------------------------------------------------------
+_MIN = {"m": 1, "h": 60, "d": 1440}
+
+
+def interval_to_kline_type(interval: str) -> int:
+    if interval == "1s":
+        return 0
+    unit = interval[-1]
+    if unit not in _MIN:
+        raise ValueError(f"Nieobsługiwany interwał Binance: {interval}")
+    value = int(interval[:-1]) * _MIN[unit]
+    if value > 255:
+        raise ValueError(f"Interwał {interval} nie mieści się w UInt8 (max 255)")
+    return value
+
+
+# ---------------------------------------------------------------------------
 # Konfiguracja
 # ---------------------------------------------------------------------------
 @dataclass
 class Config:
-    token: str
     base_url: str
     symbols: list[str]
-    kline_types: list[int]
-    interval_s: int
-    max_groups: int
-    daily_limit: int
+    interval: str
+    kline_type: int
+    poll_interval_s: int
+    backfill_limit: int
+    poll_limit: int
+    minute_weight_budget: int
     # sink
     sink_type: str  # "kafka" | "file"
     kafka_bootstrap: str
@@ -56,42 +88,40 @@ class Config:
 
     @classmethod
     def from_env(cls) -> Config:
-        token = os.getenv("ALLTICK_TOKEN", "").strip()
-        symbols = [s.strip() for s in os.getenv("SYMBOLS", "").split(",") if s.strip()]
-        kline_types = [
-            int(k) for k in os.getenv("KLINE_TYPES", "2").split(",") if k.strip()
+        symbols = [
+            s.strip().upper()
+            for s in os.getenv("SYMBOLS", "").split(",")
+            if s.strip()
         ]
+        interval = os.getenv("BINANCE_INTERVAL", "1m").strip()
         cfg = cls(
-            token=token,
             base_url=os.getenv(
-                "ALLTICK_BASE_URL", "https://quote.alltick.co/quote-stock-b-api"
+                "BINANCE_BASE_URL", "https://data-api.binance.vision"
             ).rstrip("/"),
             symbols=symbols,
-            kline_types=kline_types,
-            interval_s=int(os.getenv("POLL_INTERVAL_SECONDS", "300")),
-            max_groups=int(os.getenv("MAX_GROUPS", "10")),
-            daily_limit=int(os.getenv("DAILY_REQUEST_LIMIT", "900")),
+            interval=interval,
+            kline_type=interval_to_kline_type(interval),
+            poll_interval_s=int(os.getenv("POLL_INTERVAL_SECONDS", "60")),
+            backfill_limit=int(os.getenv("BACKFILL_LIMIT", "1000")),
+            poll_limit=int(os.getenv("POLL_LIMIT", "2")),
+            minute_weight_budget=int(os.getenv("MINUTE_WEIGHT_BUDGET", "1200")),
             sink_type=os.getenv("SINK_TYPE", "kafka").lower(),
             kafka_bootstrap=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "vm1:9092"),
-            kafka_topic=os.getenv("KAFKA_TOPIC", "raw.alltick"),
-            output_file=Path(os.getenv("OUTPUT_FILE", "data/raw_alltick_kline.txt")),
+            kafka_topic=os.getenv("KAFKA_TOPIC", "raw.binance"),
+            output_file=Path(os.getenv("OUTPUT_FILE", "data/raw_binance_kline.txt")),
         )
         cfg.validate()
         return cfg
 
     def validate(self) -> None:
-        if not self.token:
-            sys.exit("Brak ALLTICK_TOKEN (ustaw w .env).")
         if not self.symbols:
-            sys.exit("Brak SYMBOLS (np. SYMBOLS=700.HK,GOOGL.US).")
-        groups = len(self.symbols) * len(self.kline_types)
-        if groups > self.max_groups:
-            sys.exit(
-                f"{groups} grup (symbole x typy świec) > limit {self.max_groups}. "
-                "Zmniejsz liczbę symboli/typów albo zmień MAX_GROUPS."
-            )
-        if self.interval_s < 10:
-            sys.exit("POLL_INTERVAL_SECONDS musi być >= 10 (limit Free: 1/10s).")
+            sys.exit("Brak SYMBOLS (np. SYMBOLS=BTCUSDT,SOLUSDT,BNBUSDT,XRPUSDT).")
+        if self.poll_limit < 1 or self.poll_limit > 1000:
+            sys.exit("POLL_LIMIT musi być w [1, 1000].")
+        if self.backfill_limit < 0 or self.backfill_limit > 1000:
+            sys.exit("BACKFILL_LIMIT musi być w [0, 1000] (0 wyłącza backfill).")
+        if self.poll_interval_s < 1:
+            sys.exit("POLL_INTERVAL_SECONDS musi być >= 1.")
         if self.sink_type not in ("kafka", "file"):
             sys.exit(f"SINK_TYPE musi być 'kafka' lub 'file', jest: {self.sink_type}")
 
@@ -139,7 +169,7 @@ class KafkaSink(Sink):
             {
                 "bootstrap.servers": bootstrap_servers,
                 "acks": "all",
-                "linger.ms": 100,  # mini-batching wewnątrz producenta
+                "linger.ms": 100,
                 "batch.size": 65536,
                 "compression.type": "lz4",
                 "retries": 5,
@@ -162,7 +192,6 @@ class KafkaSink(Sink):
             value=value,
             callback=self._on_delivery,
         )
-        # Obsługa callbacków bez blokowania
         self._producer.poll(0)
 
     def flush(self) -> None:
@@ -185,71 +214,94 @@ def create_sink(cfg: Config) -> Sink:
 
 
 # ---------------------------------------------------------------------------
-# Wywołanie API i zamiana odpowiedzi na zdarzenia
+# Wywołanie Binance API
 # ---------------------------------------------------------------------------
 class ApiError(Exception):
     pass
 
 
-def fetch_latest_klines(session: requests.Session, cfg: Config) -> dict:
-    body = {
-        "trace": str(uuid.uuid4()),
-        "data": {
-            "data_list": [
-                {
-                    "code": code,
-                    "kline_type": kt,
-                    "kline_timestamp_end": 0,
-                    "query_kline_num": 2,
-                    "adjust_type": 0,
-                }
-                for code in cfg.symbols
-                for kt in cfg.kline_types
-            ]
-        },
-    }
-    resp = session.post(
-        f"{cfg.base_url}/batch-kline",
-        params={"token": cfg.token},
-        json=body,
+def _klines_weight(limit: int) -> int:
+    """Oficjalna waga endpointu /api/v3/klines (Binance docs)."""
+    if limit <= 100:
+        return 1
+    if limit <= 500:
+        return 2
+    if limit <= 1000:
+        return 5
+    return 10
+
+
+def fetch_klines(
+    session: requests.Session,
+    base_url: str,
+    symbol: str,
+    interval: str,
+    limit: int,
+) -> list[list]:
+    """Zwraca listę świec w surowym formacie Binance (lista list)."""
+    resp = session.get(
+        f"{base_url}/api/v3/klines",
+        params={"symbol": symbol, "interval": interval, "limit": limit},
         timeout=15,
     )
+    if resp.status_code == 429:
+        raise ApiError(f"rate limit (429) retry-after={resp.headers.get('Retry-After')}")
+    if resp.status_code == 418:
+        raise ApiError(f"IP ban (418) retry-after={resp.headers.get('Retry-After')}")
     resp.raise_for_status()
-    payload = resp.json()
-    if payload.get("ret") != 200:
-        raise ApiError(f"ret={payload.get('ret')} msg={payload.get('msg')}")
-    return payload
+    data = resp.json()
+    if not isinstance(data, list):
+        raise ApiError(f"Nieoczekiwana odpowiedź: {str(data)[:200]}")
+    return data
 
 
-def to_events(payload: dict, fetched_at: str) -> Iterator[tuple[str, dict]]:
-    """Zwraca (klucz, zdarzenie): jedno zdarzenie na jedną świecę."""
-    for item in payload.get("data", {}).get("kline_list", []):
-        code = item["code"]
-        kline_type = item["kline_type"]
-        for candle in item.get("kline_data", []):
-            yield (
-                code,
-                {
-                    "event_id": f"alltick:{code}:{kline_type}:{candle['timestamp']}",
-                    "source": "alltick",
-                    "endpoint": "batch-kline",
-                    "code": code,
-                    "kline_type": kline_type,
-                    "fetched_at": fetched_at,
-                    "payload": candle,
-                },
-            )
+def to_events(
+    symbol: str,
+    kline_type: int,
+    klines: list[list],
+    fetched_at: str,
+) -> Iterator[tuple[str, dict]]:
+    """Zamienia tablicę świec Binance na nasze zdarzenia (jedno na świecę).
+
+    Format pola `payload`:
+      * timestamp = open_time w SEKUNDACH Unix (Binance zwraca ms, dzielimy /1000)
+      * open_price/high_price/low_price/close_price = jak w Binance (stringi)
+      * volume = base asset volume (float jako string)
+      * turnover = quote asset volume (iloczyn ceny i wolumenu w USDT)
+    """
+    for k in klines:
+        if len(k) < 12:
+            continue
+        open_time_ms = int(k[0])
+        ts_sec = open_time_ms // 1000
+        candle = {
+            "timestamp": str(ts_sec),
+            "open_price": str(k[1]),
+            "high_price": str(k[2]),
+            "low_price": str(k[3]),
+            "close_price": str(k[4]),
+            "volume": str(k[5]),
+            "turnover": str(k[7]),
+        }
+        yield (
+            symbol,
+            {
+                "event_id": f"binance:{symbol}:{kline_type}:{ts_sec}",
+                "source": "binance",
+                "endpoint": "klines",
+                "code": symbol,
+                "kline_type": kline_type,
+                "fetched_at": fetched_at,
+                "payload": candle,
+            },
+        )
 
 
 # ---------------------------------------------------------------------------
 # Pętla główna
 # ---------------------------------------------------------------------------
-def seconds_until_midnight() -> float:
-    now = datetime.now()
-    midnight = (now + timedelta(days=1)).replace(
-        hour=0, minute=0, second=5, microsecond=0
-    )
-    return (midnight - now).total_seconds()
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def run(cfg: Config) -> None:
@@ -259,70 +311,107 @@ def run(cfg: Config) -> None:
 
     sink = create_sink(cfg)
     session = requests.Session()
+    session.headers.update({"Accept": "application/json"})
     failures = 0
-    requests_today = 0
-    today = datetime.now().date()
 
     log.info(
-        "Start: %d symboli x %d typów świec, co %ds, sink=%s",
+        "Start: %d symboli (%s), interwał=%s (kline_type=%d), polling co %ds, sink=%s",
         len(cfg.symbols),
-        len(cfg.kline_types),
-        cfg.interval_s,
+        ",".join(cfg.symbols),
+        cfg.interval,
+        cfg.kline_type,
+        cfg.poll_interval_s,
         cfg.sink_type,
     )
 
-    try:
-        while not stop.is_set():
-            if datetime.now().date() != today:
-                today = datetime.now().date()
-                requests_today = 0
-
-            if requests_today >= cfg.daily_limit:
-                wait = seconds_until_midnight()
-                log.warning(
-                    "Dzienny limit (%d) wyczerpany, czekam %.0f s do północy.",
-                    cfg.daily_limit,
-                    wait,
-                )
-                stop.wait(wait)
-                continue
-
-            requests_today += 1
+    # -----------------------------------------------------------------------
+    # Backfill — raz, przy starcie
+    # -----------------------------------------------------------------------
+    if cfg.backfill_limit > 0:
+        log.info(
+            "Backfill: %d świec na symbol (waga ~%d na symbol).",
+            cfg.backfill_limit,
+            _klines_weight(cfg.backfill_limit),
+        )
+        for symbol in cfg.symbols:
+            if stop.is_set():
+                break
             try:
-                payload = fetch_latest_klines(session, cfg)
-                fetched_at = datetime.now(timezone.utc).isoformat(
-                    timespec="milliseconds"
+                klines = fetch_klines(
+                    session, cfg.base_url, symbol, cfg.interval, cfg.backfill_limit
                 )
+                fetched_at = _now_iso()
                 count = 0
-                for key, event in to_events(payload, fetched_at):
+                for key, event in to_events(symbol, cfg.kline_type, klines, fetched_at):
                     sink.send(key, event)
                     count += 1
                 sink.flush()
-                failures = 0
-                log.info(
-                    "Wysłano %d świec (zapytań dziś: %d/%d)",
-                    count,
-                    requests_today,
-                    cfg.daily_limit,
+                log.info("Backfill %s: wysłano %d świec.", symbol, count)
+            except (requests.RequestException, ApiError, ValueError) as exc:
+                log.error("Backfill %s: błąd (%s): %s", symbol, type(exc).__name__, exc)
+            # mała pauza między symbolami: 1 s wystarczy przy wadze 5 i limicie 6000/min
+            if not stop.is_set():
+                stop.wait(1.0)
+
+    # -----------------------------------------------------------------------
+    # Polling na żywo
+    # -----------------------------------------------------------------------
+    poll_weight = _klines_weight(cfg.poll_limit) * len(cfg.symbols)
+    log.info(
+        "Polling: %d świec/symbol co %ds (waga ~%d/req, ~%d/min dla %d symboli).",
+        cfg.poll_limit,
+        cfg.poll_interval_s,
+        _klines_weight(cfg.poll_limit),
+        poll_weight * (60 // max(1, cfg.poll_interval_s)),
+        len(cfg.symbols),
+    )
+
+    while not stop.is_set():
+        cycle_start = time.monotonic()
+        total = 0
+        cycle_failed = False
+
+        for symbol in cfg.symbols:
+            if stop.is_set():
+                break
+            try:
+                klines = fetch_klines(
+                    session, cfg.base_url, symbol, cfg.interval, cfg.poll_limit
                 )
-                delay = cfg.interval_s
-            except (requests.RequestException, ApiError, ValueError, KeyError) as exc:
+                fetched_at = _now_iso()
+                for key, event in to_events(symbol, cfg.kline_type, klines, fetched_at):
+                    sink.send(key, event)
+                    total += 1
+            except (requests.RequestException, ApiError, ValueError) as exc:
+                cycle_failed = True
                 failures += 1
-                msg = str(exc).replace(cfg.token, "***")
-                delay = min(cfg.interval_s * 2**failures, 900)
                 log.error(
-                    "Błąd (%s): %s. Próba %d, ponawiam za %ds.",
-                    type(exc).__name__,
-                    msg,
-                    failures,
-                    delay,
+                    "Polling %s: błąd (%s): %s", symbol, type(exc).__name__, exc
                 )
 
-            stop.wait(delay)
-    finally:
-        sink.flush()
-        sink.close()
-        log.info("Zatrzymano.")
+        try:
+            sink.flush()
+        except Exception as exc:  # noqa: BLE001
+            cycle_failed = True
+            log.error("Flush sink: %s", exc)
+
+        if not cycle_failed:
+            failures = 0
+            log.info("Cykl: wysłano %d świec dla %d symboli.", total, len(cfg.symbols))
+
+        # dynamiczny backoff po błędach — rośnie wykładniczo, kap na 15 min
+        if failures > 0:
+            delay = min(cfg.poll_interval_s * 2**failures, 900)
+            log.warning("Po błędach czekam %ds (próba #%d).", delay, failures)
+        else:
+            elapsed = time.monotonic() - cycle_start
+            delay = max(1.0, cfg.poll_interval_s - elapsed)
+
+        stop.wait(delay)
+
+    sink.flush()
+    sink.close()
+    log.info("Zatrzymano.")
 
 
 def main() -> None:

@@ -5,7 +5,7 @@ models:
     description: "Świece OHLC zagregowane do interwału 1-godzinnego"
     columns:
       - name: symbol
-        description: "Ticker"
+        description: "Para krypto"
       - name: hour
         description: "Początek godziny"
       - name: open
@@ -23,7 +23,7 @@ models:
     description: "Volume-Weighted Average Price — łączy ceny z wolumenami"
     columns:
       - name: symbol
-        description: "Ticker"
+        description: "Para krypto"
       - name: hour
         description: "Początek godziny"
       - name: vwap
@@ -37,7 +37,7 @@ models:
     description: "Sygnały tradingowe: oversold/overbought, trend, volatility"
     columns:
       - name: symbol
-        description: "Ticker"
+        description: "Para krypto"
       - name: candle_time
         description: "Czas świecy"
       - name: rsi_signal

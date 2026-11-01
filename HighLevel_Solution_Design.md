@@ -26,7 +26,7 @@ Dodatkowo ludzkie oko nie wychwytuje wszystkich anomalii w danych. Model AI anal
 
 | Dashboard | Co pokazuje | Dla kogo |
 |---|---|---|
-| **Ceny live** | Świece OHLC (open/high/low/close), aktualizowane co 5 min | Analitycy, traderzy |
+| **Ceny live** | Świece OHLC 1-minutowe krypto (BTC, SOL, BNB, XRP) | Analitycy, traderzy |
 | **Wolumen i VWAP** | Obroty i cena ważona wolumenem | Analitycy |
 | **Wskaźniki techniczne** | RSI, średnie kroczące, Bollinger Bands z sygnałami kupna/sprzedaży | Traderzy |
 | **Predykcje AI** | Prognozowana cena zamknięcia na kolejne świece vs. rzeczywistość | Zarząd, analitycy |
@@ -45,7 +45,7 @@ Platforma wysyła powiadomienia gdy:
 
 | Źródło | Typ danych | Częstotliwość | Symbole |
 |---|---|---|---|
-| AllTick API | Świece cenowe (OHLC), wolumen, obrót | Co 15 minut | TSLA (Tesla), 700.HK (Tencent) |
+| Binance Spot API | Świece krypto (OHLC), wolumen, obrót | Polling co 60 s + backfill 16 h | BTCUSDT, SOLUSDT, BNBUSDT, XRPUSDT |
 
 Platforma jest przygotowana na dodawanie kolejnych symboli i źródeł danych bez przebudowy architektury.
 
@@ -142,7 +142,7 @@ Użytkownik końcowy korzysta tylko z **Grafany (vm5)** — reszta działa w tle
 
 | Faza | Co dodajemy | Korzyść biznesowa |
 |---|---|---|
-| **Faza 2** | Więcej symboli (S&P 500, GPW) | Szersze pokrycie rynków |
+| **Faza 2** | Więcej par (ETHUSDT, ADAUSDT, DOGEUSDT…) | Szersze pokrycie krypto |
 | **Faza 3** | Analiza sentymentu z newsów | Kontekst do ruchów cen |
 | **Faza 4** | Korelacje między symbolami | Analiza portfelowa |
 | **Faza 5** | Alerty na Slacka / email | Natychmiastowe powiadomienia |

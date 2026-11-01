@@ -66,7 +66,7 @@ services:
       - |
         echo "Tworzę topiki..."
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
-          --topic raw.alltick \
+          --topic raw.binance \
           --partitions 3 \
           --replication-factor 1 \
           --config retention.ms=1209600000
@@ -84,7 +84,7 @@ services:
     environment:
       SINK_TYPE: kafka
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      KAFKA_TOPIC: raw.alltick
+      KAFKA_TOPIC: raw.binance
     depends_on:
       kafka:
         condition: service_healthy

@@ -12,14 +12,14 @@ cd bigdata_projekt
 
 ### VM1 — Kafka + Producer
 
-Plik `producer/.env` jest w `.gitignore` (zawiera token AllTick), więc musi powstać ręcznie na VM1:
+Producer pobiera świece 1-minutowe z Binance Spot API (`https://data-api.binance.vision`) — publiczny endpoint, bez klucza API, bez konta. Domyślnie 4 pary: BTCUSDT, SOLUSDT, BNBUSDT, XRPUSDT; przy pierwszym starcie backfill ostatnich 1000 świec/symbol (~16 h historii), potem polling co 60 s.
+
+Plik `producer/.env` jest w `.gitignore`, więc skopiuj przykład (edycja opcjonalna — defaulty działają od razu):
 
 ```bash
 cp producer/.env.example producer/.env
-nano producer/.env           # wpisz ALLTICK_TOKEN=<twój token z alltick.co>
+# opcjonalnie: nano producer/.env  (zmień SYMBOLS, BINANCE_INTERVAL itp.)
 ```
-
-Domyślnie producer pobiera 2 symbole krypto (BTCUSDT, ETHUSDT) z crypto API AllTick. Krypto handluje się 24/7, więc dane płyną cały czas. Aby zmienić listę — edytuj `SYMBOLS=` w `producer/.env`. Dla akcji użyj innego base URL (`https://quote.alltick.co/quote-stock-b-api`) i formatu symboli `AAPL.US`, `700.HK` itp.
 
 Odpal usługi:
 ```bash
@@ -55,7 +55,7 @@ Datasource ClickHouse: host `vm2`, port `8123`, database `analytics`.
 
 ```bash
 # vm1 — producer:
-sudo docker logs producer --tail 5
+sudo docker logs producer --tail 10
 
 # vm2 — bronze rośnie:
 sudo docker exec clickhouse clickhouse-client -q \

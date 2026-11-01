@@ -14,8 +14,8 @@ CREATE TABLE IF NOT EXISTS bronze.raw_klines_queue (
 ) ENGINE = Kafka
 SETTINGS
     kafka_broker_list = 'vm1:9092',
-    kafka_topic_list = 'raw.alltick',
-    kafka_group_name = 'clickhouse-bronze',
+    kafka_topic_list = 'raw.binance',
+    kafka_group_name = 'clickhouse-bronze-binance',
     kafka_format = 'JSONEachRow',
     kafka_num_consumers = 1,
     kafka_max_block_size = 65536;

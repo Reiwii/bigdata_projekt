@@ -7,7 +7,7 @@ models:
       - name: event_id
         description: "Unikalny ID zdarzenia"
       - name: symbol
-        description: "Ticker (np. AAPL, MSFT)"
+        description: "Para krypto (np. BTCUSDT, SOLUSDT)"
       - name: candle_time
         description: "Czas otwarcia świecy"
       - name: open
@@ -25,11 +25,11 @@ models:
       - name: event_id
         description: "Unikalny ID zdarzenia"
       - name: symbol
-        description: "Ticker"
+        description: "Para krypto"
       - name: volume
-        description: "Wolumen (ilość)"
+        description: "Base asset volume (ilość waluty bazowej)"
       - name: turnover
-        description: "Obrót (wartość)"
+        description: "Quote asset volume (obrót w USDT)"
       - name: avg_trade_price
         description: "Średnia cena transakcji = turnover / volume"
 
@@ -37,7 +37,7 @@ models:
     description: "Wskaźniki techniczne: RSI(14), SMA(20), EMA(12), Bollinger Bands"
     columns:
       - name: symbol
-        description: "Ticker"
+        description: "Para krypto"
       - name: candle_time
         description: "Czas świecy"
       - name: sma_20
