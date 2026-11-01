@@ -10,9 +10,6 @@ x-extra-hosts: &extra-hosts
   - "vm5:10.7.11.47"
 
 x-airflow-common: &airflow-common
-  build:
-    context: .
-    dockerfile: Dockerfile
   image: airflow-dbt:local
   extra_hosts: *extra-hosts
   environment: &airflow-env
@@ -25,7 +22,6 @@ x-airflow-common: &airflow-common
     CLICKHOUSE_PORT: 8123
     ML_SERVICE_URL: http://vm4:8000
     AIRFLOW_CONN_ML_SERVICE: 'http://vm4:8000'
-    PATH: '/home/airflow/.local/bin:/usr/local/bin:/usr/bin:/bin'
   volumes:
     - ../../airflow/dags:/opt/airflow/dags
     - ../../dbt:/opt/airflow/dbt
@@ -51,7 +47,7 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Jednorazowy krok: fix uprawnień na mount dbt (root), potem exit.
+  # Jednorazowy fix uprawnień katalogów dbt na mount
   dbt-fix-perms:
     image: busybox:1.36
     container_name: dbt-fix-perms
@@ -68,6 +64,9 @@ services:
 
   airflow-init:
     <<: *airflow-common
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: airflow-init
     depends_on:
       postgres:
