@@ -1,16 +1,5 @@
 # Jak odpalić platformę
 
-## 0. Wymagania na każdej VM
-
-- Docker + Docker Compose
-- Dodaj do `/etc/hosts`:
-```
-10.7.11.43  vm1
-10.7.11.44  vm2
-10.7.11.45  vm3
-10.7.11.46  vm4
-10.7.11.47  vm5
-```
 
 ## 1. Klonuj repo (na każdej VM)
 
@@ -24,7 +13,7 @@ cd bigdata_projekt
 ### VM1 — Kafka + Producer
 ```bash
 cp producer/.env.example producer/.env
-nano producer/.env           # wpisz ALLTICK_TOKEN
+nano producer/.env           # wpisz ALLTICK_TOKEN # chyba nie trzeba bo juz raz to zrobilem 
 cd infra/vm1-ingest && sudo docker compose up -d
 ```
 Kafka UI: http://vm1:8080
