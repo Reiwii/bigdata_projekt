@@ -7,14 +7,13 @@
 - `/etc/hosts` na każdej VM (lub DNS):
 
 ```
-10.7.1.41  vm1
-10.7.1.42  vm2
-10.7.1.43  vm3
-10.7.1.44  vm4
-10.7.1.45  vm5
+10.7.1.43  vm1
+10.7.1.44  vm2
+10.7.1.45  vm3
+10.7.1.46  vm4
+10.7.1.47  vm5
 ```
 
-*(zmień IP na swoje)*
 
 ## 1. Klonuj repo (na każdej VM)
 

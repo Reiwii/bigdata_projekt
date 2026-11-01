@@ -3,7 +3,7 @@
 
 services:
   kafka:
-    image: bitnami/kafka:3.7
+    image: bitnami/kafka:3.7.0
     container_name: kafka
     ports:
       - "9092:9092"
@@ -43,7 +43,7 @@ services:
     restart: unless-stopped
 
   kafka-init:
-    image: bitnami/kafka:3.7
+    image: bitnami/kafka:3.7.0
     container_name: kafka-init
     depends_on:
       kafka:
