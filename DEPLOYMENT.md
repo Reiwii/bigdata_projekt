@@ -11,9 +11,18 @@ cd bigdata_projekt
 ## 2. Odpal usługi w kolejności
 
 ### VM1 — Kafka + Producer
+
+Plik `producer/.env` jest w `.gitignore` (zawiera token AllTick), więc musi powstać ręcznie na VM1:
+
 ```bash
 cp producer/.env.example producer/.env
-nano producer/.env           # wpisz ALLTICK_TOKEN # chyba nie trzeba bo juz raz to zrobilem 
+nano producer/.env           # wpisz ALLTICK_TOKEN=<twój token z alltick.co>
+```
+
+Domyślnie producer pobiera 2 symbole krypto (BTCUSDT, ETHUSDT) z crypto API AllTick. Krypto handluje się 24/7, więc dane płyną cały czas. Aby zmienić listę — edytuj `SYMBOLS=` w `producer/.env`. Dla akcji użyj innego base URL (`https://quote.alltick.co/quote-stock-b-api`) i formatu symboli `AAPL.US`, `700.HK` itp.
+
+Odpal usługi:
+```bash
 cd infra/vm1-ingest && sudo docker compose up -d
 ```
 Kafka UI: http://vm1:8080
