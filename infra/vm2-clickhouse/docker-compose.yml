@@ -13,10 +13,7 @@ services:
       - ch_logs:/var/log/clickhouse-server
       - ./init:/docker-entrypoint-initdb.d
       - ./config/kafka.xml:/etc/clickhouse-server/config.d/kafka.xml
-    environment:
-      CLICKHOUSE_DB: default
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      - ./config/users.xml:/etc/clickhouse-server/users.d/custom-users.xml
     ulimits:
       nofile:
         soft: 262144
