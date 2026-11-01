@@ -7,8 +7,7 @@ etl_koszela:
       port: 8123
       user: default
       password: ''
-      schema: default
+      schema: analytics
       secure: false
       verify: false
       connect_timeout: 10
-      create_db_if_not_exists: false
