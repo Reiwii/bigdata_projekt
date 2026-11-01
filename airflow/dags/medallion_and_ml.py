@@ -4,7 +4,7 @@ DAG: medallion_and_ml
 Nieliniowy pipeline: bronze_check → 3× silver (równoległe) → 3× gold (równoległe) → ML.
 Fan-out po bronze, fan-in przed ML predict.
 
-Schedule: co 15 minut (student project — nie potrzebujemy co 5 min).
+Schedule: co 15 minut.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from datetime import timedelta
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.providers.http.operators.http import SimpleHttpOperator
-from airflow.sensors.sql import SqlSensor
 
 # ---------------------------------------------------------------------------
 # Konfiguracja
@@ -23,8 +22,8 @@ from airflow.sensors.sql import SqlSensor
 DBT_DIR = "/opt/airflow/dbt"
 DBT_CMD = f"cd {DBT_DIR} && dbt run --profiles-dir {DBT_DIR}"
 
-CLICKHOUSE_CONN_ID = "clickhouse_default"   # Airflow Connection (do sensora)
-ML_CONN_ID = "ml_service"                   # http://vm4:8000
+CLICKHOUSE_URL = "http://vm2:8123"
+ML_CONN_ID = "ml_service"   # http://vm4:8000, zdefiniowane przez env var
 
 default_args = {
     "owner": "etl-koszela",
@@ -49,19 +48,17 @@ with DAG(
 ) as dag:
 
     # -----------------------------------------------------------------------
-    # 0. Bronze check — czy są świeże dane
+    # 0. Bronze check — czy w ostatnich 30 min są świeże dane
     # -----------------------------------------------------------------------
-    bronze_check = SqlSensor(
+    bronze_check = BashOperator(
         task_id="bronze_check",
-        conn_id=CLICKHOUSE_CONN_ID,
-        sql="""
-            SELECT count() > 0
-            FROM bronze.raw_klines
-            WHERE fetched_at > now() - INTERVAL 30 MINUTE
-        """,
-        mode="reschedule",          # zwalnia slot gdy czeka
-        poke_interval=60,
-        timeout=300,                # max 5 min czekania
+        bash_command=(
+            f"COUNT=$(curl -s '{CLICKHOUSE_URL}/?query="
+            f"SELECT%20count()%20FROM%20bronze.raw_klines%20"
+            f"WHERE%20fetched_at%20%3E%20now()%20-%20INTERVAL%2030%20MINUTE'); "
+            f"echo \"Świeżych rekordów: $COUNT\"; "
+            f"test \"$COUNT\" -gt 0"
+        ),
     )
 
     # -----------------------------------------------------------------------
@@ -140,4 +137,3 @@ with DAG(
     # Gold → ML (fan-in)
     gold_technical                              >> ml_anomaly   # anomalie tylko z technical
     [gold_ohlc, gold_vwap, gold_technical]      >> ml_predict   # predykcja potrzebuje wszystkiego
-

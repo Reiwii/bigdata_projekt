@@ -22,6 +22,8 @@ x-airflow-common: &airflow-common
     CLICKHOUSE_HOST: vm2
     CLICKHOUSE_PORT: 8123
     ML_SERVICE_URL: http://vm4:8000
+    # Airflow Connection dla SimpleHttpOperator (DAG używa http_conn_id="ml_service"):
+    AIRFLOW_CONN_ML_SERVICE: 'http://vm4:8000'
   volumes:
     - ../../airflow/dags:/opt/airflow/dags
     - ../../dbt:/opt/airflow/dbt
