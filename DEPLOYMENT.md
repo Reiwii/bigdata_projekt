@@ -1,11 +1,9 @@
 # Jak odpalić platformę
 
-## 0. Wymagania
+## 0. Wymagania na każdej VM
 
-- Docker + Docker Compose na każdej VM
-- Sieć między VM (porty: 9092, 8123, 8082, 8000, 3000)
-- `/etc/hosts` na każdej VM (lub DNS):
-
+- Docker + Docker Compose
+- Dodaj do `/etc/hosts`:
 ```
 10.7.11.43  vm1
 10.7.11.44  vm2
@@ -14,7 +12,6 @@
 10.7.11.47  vm5
 ```
 
-
 ## 1. Klonuj repo (na każdej VM)
 
 ```bash
@@ -22,110 +19,77 @@ git clone <repo-url> bigdata_projekt
 cd bigdata_projekt
 ```
 
-## 2. Odpalaj w kolejności
+## 2. Odpal usługi w kolejności
 
 ### VM1 — Kafka + Producer
-
 ```bash
-cd infra/vm1-ingest
-
-# Skopiuj .env z tokenem AllTick
-cp ../../producer/.env.example ../../producer/.env
-nano ../../producer/.env          # wpisz ALLTICK_TOKEN
-
-docker compose up -d
+cp producer/.env.example producer/.env
+nano producer/.env           # wpisz ALLTICK_TOKEN
+cd infra/vm1-ingest && sudo docker compose up -d
 ```
-
-Sprawdź: `docker compose logs -f producer` — powinny lecieć logi z fetchami.
-
 Kafka UI: http://vm1:8080
 
 ### VM2 — ClickHouse
-
 ```bash
-cd infra/vm2-clickhouse
-docker compose up -d
+cd infra/vm2-clickhouse && sudo docker compose up -d
 ```
-
-Sprawdź (poczekaj ~30s na start):
-```bash
-docker exec clickhouse clickhouse-client -q "SELECT count() FROM bronze.raw_klines"
-```
-Liczba powinna rosnąć co minutę.
 
 ### VM3 — Airflow + dbt
-
 ```bash
-cd infra/vm3-orchestration
-docker compose up -d
+cd infra/vm3-orchestration && sudo docker compose up -d
 ```
-
-Poczekaj ~2 min na `airflow-init` (migracja bazy + instalacja dbt-clickhouse).
-
-Airflow UI: http://vm3:8082 (login: `airflow` / `airflow`)
-
-Włącz DAG `medallion_and_ml` w UI (domyślnie jest wyłączony).
+Pierwszy start trwa ~2 min (instalacja dbt-clickhouse).
+Airflow UI: http://vm3:8082 (login: `airflow` / `airflow`) — włącz DAG `medallion_and_ml`.
 
 ### VM4 — Serwis ML
-
 ```bash
-cd infra/vm4-ml
-docker compose up -d
+cd infra/vm4-ml && sudo docker compose up -d
 ```
-
-Sprawdź: `curl http://vm4:8000/health` → `{"status":"ok"}`
 
 ### VM5 — Grafana
-
 ```bash
-cd infra/vm5-grafana
-docker compose up -d
+cd infra/vm5-grafana && sudo docker compose up -d
 ```
+Grafana: http://vm5:3000 (login: `admin` / `admin`).
+Datasource ClickHouse: host `vm2`, port `8123`, database `analytics`.
 
-Grafana: http://vm5:3000 (login: `admin` / `admin`)
-
-## 3. Weryfikacja end-to-end
+## 3. Sprawdzenie
 
 ```bash
-# 1. Czy Kafka ma dane? (vm1)
-docker exec kafka kafka-console-consumer \
-  --bootstrap-server localhost:9092 \
-  --topic raw.alltick --max-messages 1
+# vm1 — producer:
+sudo docker logs producer --tail 5
 
-# 2. Czy bronze rośnie? (vm2)
-docker exec clickhouse clickhouse-client -q \
+# vm2 — bronze rośnie:
+sudo docker exec clickhouse clickhouse-client -q \
   "SELECT count(), max(fetched_at) FROM bronze.raw_klines"
 
-# 3. Czy dbt przeszło? (vm3 — po pierwszym runie DAG)
-docker exec airflow-scheduler bash -c \
-  "cd /opt/airflow/dbt && dbt run --profiles-dir . 2>&1 | tail -5"
+# vm2 — silver/gold (po pierwszym runie DAG lub ręcznie na vm3):
+sudo docker exec clickhouse clickhouse-client -q "SHOW TABLES FROM analytics"
 
-# 4. Czy ML odpowiada? (vm4)
-curl -X POST http://vm4:8000/predict
+# vm3 — ręczny run dbt (opcjonalnie):
+sudo docker exec airflow-scheduler bash -c "cd /opt/airflow/dbt && dbt run"
 
-# 5. Czy Grafana widzi dane? (vm5)
-# Otwórz http://vm5:3000 → dodaj datasource ClickHouse (vm2:8123)
+# vm4 — ML:
+curl http://vm4:8000/health
 ```
 
-## Troubleshooting
-
-| Problem | Rozwiązanie |
-|---|---|
-| `no route to host` | Sprawdź VPN / sieć kampusową + `/etc/hosts` |
-| bronze count = 0 | Kafka nie działa lub producer nie ma tokena → `docker compose logs producer` |
-| DAG failed `bronze_check` | Brak świeżych danych w bronze → sprawdź vm1 |
-| dbt error | `docker exec airflow-scheduler bash -c "cd /opt/airflow/dbt && dbt debug"` |
-| Grafana: no data | Dodaj datasource: ClickHouse, URL: `http://vm2:8123`, database: `default` |
-
-## Zatrzymanie
+## 4. Stop / Start
 
 ```bash
-# Na każdej VM:
-cd infra/vmX-* && docker compose down
+# Zatrzymaj (dane zachowane):
+cd infra/vmX-* && sudo docker compose down
 
-# Z zachowaniem danych (volumes):
-docker compose down
+# Start:
+sudo docker compose up -d
 
-# Czyste wymazanie (uwaga — kasuje dane!):
-docker compose down -v
+# Czyste wymazanie (uwaga: kasuje dane!):
+sudo docker compose down -v
 ```
+
+## Schemat baz w ClickHouse
+
+| Baza | Zawartość |
+|---|---|
+| `bronze` | surowe dane z Kafki (append-only) |
+| `analytics` | silver + gold (dbt) |
+| `ml` | predictions + anomalies (serwis ML z vm4) |

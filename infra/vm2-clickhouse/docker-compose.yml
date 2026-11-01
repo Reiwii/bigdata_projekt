@@ -5,6 +5,12 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:24.3
     container_name: clickhouse
+    extra_hosts:
+      - "vm1:10.7.11.43"
+      - "vm2:10.7.11.44"
+      - "vm3:10.7.11.45"
+      - "vm4:10.7.11.46"
+      - "vm5:10.7.11.47"
     ports:
       - "8123:8123"
       - "9000:9000"

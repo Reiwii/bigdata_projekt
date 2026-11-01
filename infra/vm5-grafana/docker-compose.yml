@@ -2,10 +2,18 @@
 # Uruchomienie: docker compose up -d
 # UI: http://vm5:3000 (login: admin / admin)
 
+x-extra-hosts: &extra-hosts
+  - "vm1:10.7.11.43"
+  - "vm2:10.7.11.44"
+  - "vm3:10.7.11.45"
+  - "vm4:10.7.11.46"
+  - "vm5:10.7.11.47"
+
 services:
   grafana:
     image: grafana/grafana:11.1.0
     container_name: grafana
+    extra_hosts: *extra-hosts
     ports:
       - "3000:3000"
     environment:
@@ -21,6 +29,7 @@ services:
   backup:
     image: alpine:3.20
     container_name: backup-cron
+    extra_hosts: *extra-hosts
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
