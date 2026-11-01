@@ -1,5 +1,5 @@
 # vm3: Airflow (LocalExecutor) + Postgres (metadata) + dbt
-# Uruchomienie: docker compose up -d
+# Uruchomienie: docker compose up -d --build
 # UI: http://vm3:8082 (login: airflow / airflow)
 
 x-extra-hosts: &extra-hosts
@@ -10,8 +10,10 @@ x-extra-hosts: &extra-hosts
   - "vm5:10.7.11.47"
 
 x-airflow-common: &airflow-common
-  image: apache/airflow:2.9.3-python3.11
-  user: "0:0"
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: airflow-dbt:local
   extra_hosts: *extra-hosts
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
@@ -22,8 +24,8 @@ x-airflow-common: &airflow-common
     CLICKHOUSE_HOST: vm2
     CLICKHOUSE_PORT: 8123
     ML_SERVICE_URL: http://vm4:8000
-    # Airflow Connection dla SimpleHttpOperator (DAG używa http_conn_id="ml_service"):
     AIRFLOW_CONN_ML_SERVICE: 'http://vm4:8000'
+    PATH: '/home/airflow/.local/bin:/usr/local/bin:/usr/bin:/bin'
   volumes:
     - ../../airflow/dags:/opt/airflow/dags
     - ../../dbt:/opt/airflow/dbt
@@ -49,15 +51,32 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Jednorazowy krok: fix uprawnień na mount dbt (root), potem exit.
+  dbt-fix-perms:
+    image: busybox:1.36
+    container_name: dbt-fix-perms
+    volumes:
+      - ../../dbt:/opt/airflow/dbt
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /opt/airflow/dbt/target /opt/airflow/dbt/logs
+        chown -R 50000:0 /opt/airflow/dbt/target /opt/airflow/dbt/logs
+        chmod -R 775 /opt/airflow/dbt/target /opt/airflow/dbt/logs
+    restart: "no"
+
   airflow-init:
     <<: *airflow-common
     container_name: airflow-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dbt-fix-perms:
+        condition: service_completed_successfully
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        pip install "dbt-core==1.8.9" "dbt-clickhouse==1.8.5"
-        mkdir -p /opt/airflow/dbt/target /opt/airflow/dbt/logs
-        chmod -R 777 /opt/airflow/dbt/target /opt/airflow/dbt/logs
         airflow db migrate
         airflow users create \
           --username airflow --password airflow \
@@ -68,13 +87,7 @@ services:
   airflow-webserver:
     <<: *airflow-common
     container_name: airflow-webserver
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        pip install "dbt-core==1.8.9" "dbt-clickhouse==1.8.5"
-        mkdir -p /opt/airflow/dbt/target /opt/airflow/dbt/logs
-        chmod -R 777 /opt/airflow/dbt/target /opt/airflow/dbt/logs
-        exec airflow webserver
+    command: webserver
     ports:
       - "8082:8080"
     restart: unless-stopped
@@ -82,13 +95,7 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     container_name: airflow-scheduler
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        pip install "dbt-core==1.8.9" "dbt-clickhouse==1.8.5"
-        mkdir -p /opt/airflow/dbt/target /opt/airflow/dbt/logs
-        chmod -R 777 /opt/airflow/dbt/target /opt/airflow/dbt/logs
-        exec airflow scheduler
+    command: scheduler
     restart: unless-stopped
 
 volumes:
