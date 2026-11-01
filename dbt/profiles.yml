@@ -11,3 +11,5 @@ etl_koszela:
       secure: false
       verify: false
       connect_timeout: 10
+      check_exchange: false
+      use_lw_deletes: false
