@@ -8,6 +8,7 @@ SELECT
     symbol,
     candle_time,
     close,
+    volume,
     rsi_14,
     sma_20,
     ema_12,

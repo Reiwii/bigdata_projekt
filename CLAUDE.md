@@ -54,7 +54,8 @@ bigdata_projekt/
 │   ├── vm2-clickhouse/
 │   │   ├── docker-compose.yml      # ✅ ClickHouse
 │   │   ├── config/kafka.xml        # ✅ konfiguracja konsumenta Kafki
-│   │   └── init/01_bronze.sql      # ✅ tabele bronze (auto przy starcie)
+│   │   ├── init/01_bronze.sql      # ✅ tabele bronze (auto przy starcie)
+│   │   └── init/02_ml.sql          # ✅ ml.predictions / ml.anomalies / ml.model_runs
 │   ├── vm3-orchestration/
 │   │   └── docker-compose.yml      # ✅ Airflow + Postgres + dbt
 │   ├── vm4-ml/
@@ -89,8 +90,12 @@ bigdata_projekt/
 ├── airflow/dags/                   # ✅ DAG-i Airflow (używany przez vm3)
 │   └── medallion_and_ml.py         # ✅ nieliniowy fan-out/fan-in, co 15 min
 │
-├── ml/                             # Serwis ML (używany przez vm4)
-│   ├── app.py                      # 🔲 FastAPI: /predict + /detect-anomalies (placeholder)
+├── ml/                             # ✅ Serwis ML (używany przez vm4) — szczegóły: ml/README.md
+│   ├── app.py                      # ✅ FastAPI: /predict, /detect-anomalies, /train, /model-info, /health
+│   ├── features.py                 # ✅ cechy z gold (zwroty, RSI, SMA/EMA, Bollinger, wolumen, VWAP 1h)
+│   ├── forecasting.py              # ✅ XGBoost: 1 model na horyzont 1..6 świec, .joblib w /models
+│   ├── anomaly_detection.py        # ✅ Isolation Forest per symbol, zdarzenia anomalii
+│   ├── database.py / settings.py   # ✅ ClickHouse I/O, schemat ml, konfiguracja z env
 │   └── Dockerfile                  # ✅
 │
 ├── grafana/                        # Dashboardy (używany przez vm5)
@@ -146,8 +151,9 @@ gold_vwap czeka na silver_prices + silver_volumes (łączy ceny z wolumenami).
 ### ML (pisane przez serwis ML z vm4)
 | Tabela | Zależy od | Opis |
 |---|---|---|
-| `ml.predictions` | all 3 gold | predykcja close_price (XGBoost) |
-| `ml.anomalies` | `gold_technical` | anomalie (Isolation Forest, score 0-1) |
+| `ml.predictions` | all 3 gold | predykcja close_price na 1..6 świec (XGBoost), klucz (symbol, base_candle_time, horizon) |
+| `ml.anomalies` | `gold_technical` | zdarzenia anomalii (Isolation Forest, score 0-1, typ), klucz (symbol, event_start_time) |
+| `ml.model_runs` | — | log treningów i przebiegów z metrykami |
 
 ## Co jest gotowe, co do zrobienia
 
@@ -156,15 +162,15 @@ gold_vwap czeka na silver_prices + silver_volumes (łączy ceny z wolumenami).
 - [x] Docker-compose vm1: Kafka (KRaft) + Kafka UI + Producer + auto-topik
 - [x] Docker-compose vm2: ClickHouse + bronze (Kafka Engine + MergeTree + MV)
 - [x] Docker-compose vm3: Airflow (LocalExecutor) + Postgres + dbt mount
-- [x] Docker-compose vm4: FastAPI ML serwis (placeholder)
+- [x] Docker-compose vm4: FastAPI ML serwis + wolumen na model
 - [x] Docker-compose vm5: Grafana + backup cron
 - [x] dbt: staging (stg_klines) + 3× silver + 3× gold z dokumentacją
 - [x] Airflow DAG: medallion_and_ml (nieliniowy, co 15 min)
 - [x] Architektura (architektura.md) + dokumentacja biznesowa
+- [x] **ML:** /predict (XGBoost) i /detect-anomalies (Isolation Forest) — ml/README.md
+- [x] **ML:** tabele ml.predictions, ml.anomalies, ml.model_runs (init/02_ml.sql + auto przy starcie serwisu)
 
 ### 🔲 Do zrobienia
-- [ ] **ML:** Implementacja /predict (XGBoost) i /detect-anomalies (Isolation Forest)
-- [ ] **ML:** Tabele ml.predictions i ml.anomalies w ClickHouse (init SQL)
 - [ ] **Grafana:** Provisioning datasource (ClickHouse)
 - [ ] **Grafana:** Dashboardy: ceny live, predykcje vs real, alerty anomalii
 - [ ] **Testy:** dbt test, integracja end-to-end

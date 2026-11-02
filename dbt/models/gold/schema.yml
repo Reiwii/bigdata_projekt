@@ -40,6 +40,8 @@ models:
         description: "Para krypto"
       - name: candle_time
         description: "Czas świecy"
+      - name: volume
+        description: "Wolumen świecy (cecha dla wykrywania anomalii wolumenowych w serwisie ML)"
       - name: rsi_signal
         description: "oversold / overbought / neutral"
       - name: trend_signal

@@ -1,6 +1,8 @@
 # vm4: Serwis ML (FastAPI + XGBoost + Isolation Forest)
-# Uruchomienie: docker compose up -d
-# Test: curl http://vm4:8000/health
+# Uruchomienie: docker compose up -d --build
+# Test:         curl http://vm4:8000/health
+#               curl -X POST http://vm4:8000/predict
+#               curl -X POST http://vm4:8000/detect-anomalies
 
 services:
   ml-service:
@@ -19,10 +21,27 @@ services:
     environment:
       CLICKHOUSE_HOST: vm2
       CLICKHOUSE_PORT: 8123
-      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_DB: analytics          # skąd czytamy gold_*
+      ML_DATABASE: ml                   # dokąd piszemy predictions / anomalies / model_runs
+      MODEL_DIRECTORY: /models
+      CANDLE_MINUTES: 1
+      # predykcja (XGBoost)
+      FORECAST_HORIZONS: "1,2,3,4,5,6"
+      FORECAST_TRAINING_WINDOW_DAYS: 7
+      FORECAST_RETRAIN_INTERVAL_MINUTES: 60
+      # anomalie (Isolation Forest)
+      ANOMALY_TRAINING_WINDOW_DAYS: 3
+      ANOMALY_SCORING_WINDOW_MINUTES: 60
+      ANOMALY_CONTAMINATION: 0.01
+    volumes:
+      - ml_models:/models               # wytrenowany model przeżywa restart kontenera
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=4).status == 200 else 1)"]
       interval: 15s
       timeout: 5s
       retries: 3
+      start_period: 20s
+
+volumes:
+  ml_models:
