@@ -185,39 +185,45 @@ def train_price_forecast(
 
 
 def predict_next_closes(
-    bundle: PriceForecastBundle, feature_frame: pd.DataFrame, maximum_staleness_candles: int = 5
+    bundle: PriceForecastBundle, feature_frame: pd.DataFrame, backfill_candles: int = 60
 ) -> pd.DataFrame:
-    """Predykcja z OSTATNIEJ zamkniętej świecy każdego symbolu na każdy horyzont."""
+    """Predykcja z ostatnich `backfill_candles` zamkniętych świec na każdy horyzont.
+
+    Zamiast jednego punktu co run DAG-a (co 15 min) generujemy ciągły ślad z ostatniej
+    godziny. Dzięki temu wykres 'predicted vs actual' w Grafanie jest ciągłą linią,
+    a nie rzadkimi kropkami. Powtórki są bezpieczne: ml.predictions to ReplacingMergeTree
+    z kluczem (symbol, base_candle_time, horizon), więc ten sam punkt się nadpisuje.
+    """
     if feature_frame.empty:
         return pd.DataFrame()
 
     newest_candle_time = feature_frame["candle_time"].max()
-    staleness_limit = newest_candle_time - pd.Timedelta(minutes=maximum_staleness_candles * bundle.candle_minutes)
-    latest_rows = (
+    oldest_to_predict = newest_candle_time - pd.Timedelta(
+        minutes=backfill_candles * bundle.candle_minutes
+    )
+    base_rows = (
         feature_frame.dropna(subset=["return_1"])
         .sort_values("candle_time")
-        .groupby("symbol", as_index=False)
-        .tail(1)
     )
-    latest_rows = latest_rows[latest_rows["candle_time"] >= staleness_limit]
-    if latest_rows.empty:
+    base_rows = base_rows[base_rows["candle_time"] >= oldest_to_predict]
+    if base_rows.empty:
         return pd.DataFrame()
 
     predicted_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
     prediction_frames = []
     for horizon, horizon_model in sorted(bundle.horizon_models.items()):
-        predicted_returns = horizon_model.regressor.predict(latest_rows[bundle.feature_columns])
+        predicted_returns = horizon_model.regressor.predict(base_rows[bundle.feature_columns])
         prediction_frames.append(
             pd.DataFrame(
                 {
-                    "symbol": latest_rows["symbol"].to_numpy(),
-                    "base_candle_time": latest_rows["candle_time"].to_numpy(),
+                    "symbol": base_rows["symbol"].to_numpy(),
+                    "base_candle_time": base_rows["candle_time"].to_numpy(),
                     "target_candle_time": (
-                        latest_rows["candle_time"] + pd.Timedelta(minutes=horizon * bundle.candle_minutes)
+                        base_rows["candle_time"] + pd.Timedelta(minutes=horizon * bundle.candle_minutes)
                     ).to_numpy(),
                     "horizon": np.uint8(horizon),
-                    "base_close": latest_rows["close"].to_numpy(dtype=float),
-                    "predicted_close": latest_rows["close"].to_numpy(dtype=float) * (1.0 + predicted_returns),
+                    "base_close": base_rows["close"].to_numpy(dtype=float),
+                    "predicted_close": base_rows["close"].to_numpy(dtype=float) * (1.0 + predicted_returns),
                     "predicted_return": predicted_returns.astype(float),
                     "validation_mae_return": horizon_model.validation_mae_return,
                     "confidence": np.float32(horizon_model.confidence),

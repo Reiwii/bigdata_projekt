@@ -26,13 +26,13 @@ services:
       MODEL_DIRECTORY: /models
       CANDLE_MINUTES: 1
       # predykcja (XGBoost)
-      FORECAST_HORIZONS: "1,2,3,4,5,6"
+      FORECAST_HORIZONS: "1,5,15,30,60"
       FORECAST_TRAINING_WINDOW_DAYS: 7
       FORECAST_RETRAIN_INTERVAL_MINUTES: 60
       # anomalie (Isolation Forest)
       ANOMALY_TRAINING_WINDOW_DAYS: 3
       ANOMALY_SCORING_WINDOW_MINUTES: 60
-      ANOMALY_CONTAMINATION: 0.01
+      ANOMALY_CONTAMINATION: 0.03
     volumes:
       - ml_models:/models               # wytrenowany model przeżywa restart kontenera
     restart: unless-stopped

@@ -1,0 +1,15 @@
+apiVersion: 1
+
+# Grafana wczytuje wszystkie *.json z /var/lib/grafana/dashboards
+# (to jest zamontowany katalog grafana/dashboards z repo).
+providers:
+  - name: repo-dashboards
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true        # można edytować w UI; zapis do repo robi export_dashboards.py
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true
