@@ -1,6 +1,14 @@
 -- Gold VWAP: Volume-Weighted Average Price na interwale godzinowym.
 -- Łączy silver_prices (ceny) z silver_volumes (wolumeny).
 -- VWAP = Σ(typical_price × volume) / Σ(volume)
+--
+-- Incremental: delete+insert po (symbol, hour). Przeliczamy bieżącą + poprzednią godzinę.
+
+{{ config(
+    materialized='incremental',
+    incremental_strategy='delete+insert',
+    unique_key=['symbol', 'hour']
+) }}
 
 WITH price_volume AS (
     SELECT
@@ -13,6 +21,9 @@ WITH price_volume AS (
     FROM {{ ref('silver_prices') }}  AS p
     INNER JOIN {{ ref('silver_volumes') }} AS v
         ON p.event_id = v.event_id
+    {% if is_incremental() %}
+    WHERE p.candle_time >= (SELECT max(hour) - INTERVAL 1 HOUR FROM {{ this }})
+    {% endif %}
 )
 
 SELECT
@@ -28,4 +39,3 @@ SELECT
     count()                                              AS trade_count
 FROM price_volume
 GROUP BY symbol, hour
-ORDER BY symbol, hour

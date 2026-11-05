@@ -1,6 +1,14 @@
 -- Silver Volumes: wolumen i obrót, zdeduplikowane.
 -- Osobna tabela bo wolumen i obrót mają inne wzorce użycia niż ceny
 -- (VWAP, analiza płynności, anomalie wolumenowe).
+--
+-- Incremental: delete+insert po event_id, z 2h lookback na spóźnione fetche.
+
+{{ config(
+    materialized='incremental',
+    incremental_strategy='delete+insert',
+    unique_key='event_id'
+) }}
 
 SELECT
     event_id,
@@ -22,6 +30,8 @@ FROM (
             ORDER BY fetched_at DESC
         ) AS rn
     FROM {{ ref('stg_klines') }}
+    {% if is_incremental() %}
+    WHERE candle_time >= (SELECT max(candle_time) - INTERVAL 2 HOUR FROM {{ this }})
+    {% endif %}
 )
 WHERE rn = 1
-ORDER BY symbol, candle_time
