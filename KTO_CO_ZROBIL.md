@@ -20,6 +20,7 @@
 - dokumentacja techniczna
 
 **Mikołaj Mazurek**
+
 - testy integracyjne
 - smoke testy
 - testy bezpieczeństwa
